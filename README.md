@@ -45,13 +45,28 @@ node dist/src/mcp-server.js
 config file with `base_url` or `worker_url`, `session_id`, and
 `controller_token`.
 
+Dangerous foreground execution is disabled unless it is explicitly enabled in
+local policy. To allow only the short `colab_run_shell` and `colab_run_python`
+tools implemented in this slice, set one of:
+
+```bash
+COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS=1
+```
+
+or add `"enable_dangerous_tools": true` / `"enableDangerousTools": true` to the
+local config file. The Worker/HTTP handler must also be started with the same
+explicit enablement, for example with `COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS=1`
+in the Worker environment. Without this, `run_shell` and `run_python` return
+`TOOL_DISABLED`.
+
 ## Implemented In This Slice
 
 - TypeScript scaffold with protocol types and envelope helpers.
 - Token generation, hashing, verification, timestamp skew validation, nonce replay rejection, revoke support, and audit logging.
 - A local in-memory broker with an explicit repository interface and persisted command state transitions.
 - A fake runner path for authenticated `ping`, `status`, and fixed
-  `gpu_status` commands.
+  `gpu_status` commands, plus bounded foreground `run_shell` and `run_python`
+  when explicitly enabled.
 - A local Worker-style HTTP route layer over the broker, testable with plain Node
   `Request`/`Response` objects.
 - HTTP routes for health, authenticated session creation, controller status,
@@ -66,24 +81,29 @@ config file with `base_url` or `worker_url`, `session_id`, and
 - `colab_gpu_status`, enabled by default as a read-only, open-world,
   idempotent MCP tool. It creates only the fixed `gpu_status` command and
   returns the serialized command result.
+- `colab_run_shell` and `colab_run_python`, still disabled by default and only
+  executable when local MCP config/options and HTTP/Worker context explicitly
+  enable dangerous tools. These commands enforce a default 30 second timeout,
+  a hard 120 second timeout maximum, and a 20 KiB output cap.
 - Local MCP config parsing/loading and authenticated HTTP client calls with a
   fresh timestamp and nonce per bridge request.
 - A Cloudflare Worker-shaped entry module with an env-scoped in-memory fallback
   for local tests and a Durable Object class with explicit persisted broker
   state shape.
 - Secret-free Wrangler configuration for the Worker and Durable Object binding.
-- A Python Colab runner skeleton at `python/colab_runner.py` documenting the
-  outbound runner connection shape and implementing only the fixed GPU probe.
+- A Python Colab runner at `python/colab_runner.py` documenting the outbound
+  runner connection shape and implementing the fixed GPU probe plus bounded
+  foreground shell/Python commands under `/content/project`.
 
 ## Intentionally Not Implemented Yet
 
 - Real deployed Cloudflare integration tests, full WebSocket handling in Node
   tests, and full SQLite table-backed Durable Object storage.
-- Shell execution, `run_python`, file tools, and background jobs.
+- File tools and background jobs.
 - Deployed Cloudflare wiring for the MCP server. The server is local and
   testable, and currently targets the existing HTTP handler/client path.
 
-The runner GPU status path remains fixed-command only. It does not expose
-arbitrary shell execution, Python execution, file access, or background jobs.
-Dangerous tools are represented as disabled metadata/helper responses only.
-They do not execute.
+The runner does not expose file access or background jobs. Shell and Python
+foreground execution are remote code execution in the Colab VM and remain
+disabled by default in metadata and local policy; they execute only after
+explicit local enablement on both the MCP and HTTP/Worker sides.

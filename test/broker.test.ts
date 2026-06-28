@@ -137,6 +137,86 @@ test("fake runner gpu_status command returns deterministic GPU payload", async (
   });
 });
 
+test("fake runner run_shell returns bounded foreground execution result", async () => {
+  const broker = new SessionBroker();
+  const session = broker.createSession();
+  const controllerAuth = authFactory(session.controllerToken, "controller");
+  const runnerAuth = authFactory(session.runnerToken, "runner");
+  new FakeRunner(broker, session.sessionId, runnerAuth).attach();
+
+  const command = await broker.createCommand(session.sessionId, controllerAuth(), {
+    type: "run_shell",
+    payload: { command: "printf shell-ok", timeout_sec: 5, max_output_bytes: 1024 },
+  });
+  const result = command.resultPayload as {
+    stdout: string;
+    stderr: string;
+    exit_code: number | null;
+    timed_out: boolean;
+    truncated: boolean;
+  };
+
+  assert.equal(command.state, "succeeded");
+  assert.equal(result.stdout, "shell-ok");
+  assert.equal(result.stderr, "");
+  assert.equal(result.exit_code, 0);
+  assert.equal(result.timed_out, false);
+  assert.equal(result.truncated, false);
+});
+
+test("fake runner run_python returns bounded foreground execution result", async () => {
+  const broker = new SessionBroker();
+  const session = broker.createSession();
+  const controllerAuth = authFactory(session.controllerToken, "controller");
+  const runnerAuth = authFactory(session.runnerToken, "runner");
+  new FakeRunner(broker, session.sessionId, runnerAuth).attach();
+
+  const command = await broker.createCommand(session.sessionId, controllerAuth(), {
+    type: "run_python",
+    payload: { code: "print('python-ok')", timeout_sec: 5, max_output_bytes: 1024 },
+  });
+  const result = command.resultPayload as {
+    stdout: string;
+    exit_code: number | null;
+    timed_out: boolean;
+    truncated: boolean;
+  };
+
+  assert.equal(command.state, "succeeded");
+  assert.equal(result.stdout, "python-ok\n");
+  assert.equal(result.exit_code, 0);
+  assert.equal(result.timed_out, false);
+  assert.equal(result.truncated, false);
+});
+
+test("fake runner foreground execution reports truncation and timeout", async () => {
+  const broker = new SessionBroker();
+  const session = broker.createSession();
+  const controllerAuth = authFactory(session.controllerToken, "controller");
+  const runnerAuth = authFactory(session.runnerToken, "runner");
+  new FakeRunner(broker, session.sessionId, runnerAuth).attach();
+
+  const truncated = await broker.createCommand(session.sessionId, controllerAuth(), {
+    type: "run_shell",
+    payload: { command: "printf abcdef", timeout_sec: 5, max_output_bytes: 3 },
+  });
+  const truncatedResult = truncated.resultPayload as { stdout: string; truncated: boolean };
+  assert.equal(truncatedResult.stdout, "abc");
+  assert.equal(truncatedResult.truncated, true);
+
+  const timedOut = await broker.createCommand(session.sessionId, controllerAuth(), {
+    type: "run_shell",
+    payload: {
+      command: "node -e \"setTimeout(() => {}, 1000)\"",
+      timeout_sec: 0.05,
+      max_output_bytes: 1024,
+    },
+  });
+  const timedOutResult = timedOut.resultPayload as { timed_out: boolean; exit_code: number | null };
+  assert.equal(timedOutResult.timed_out, true);
+  assert.equal(timedOutResult.exit_code, null);
+});
+
 test("runner reconnect and restart update metadata explicitly", () => {
   const broker = new SessionBroker();
   const session = broker.createSession(new Date("2026-06-28T10:00:00.000Z"));

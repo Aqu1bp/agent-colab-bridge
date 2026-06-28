@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { bridgeError, type BridgeError } from "./protocol.js";
+import {
+  bridgeError,
+  type BridgeError,
+  type RunPythonPayload,
+  type RunShellPayload,
+} from "./protocol.js";
 import { type BridgeHttpHandler } from "./http.js";
 import { type LocalBridgeConfig } from "./mcp-config.js";
 
@@ -57,6 +62,22 @@ export class BridgeHttpClient {
       "POST",
       `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
       { type: "gpu_status" },
+    );
+  }
+
+  async createRunShellCommand(payload: RunShellPayload): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.request<BridgeCommandData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
+      { type: "run_shell", payload },
+    );
+  }
+
+  async createRunPythonCommand(payload: RunPythonPayload): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.request<BridgeCommandData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
+      { type: "run_python", payload },
     );
   }
 

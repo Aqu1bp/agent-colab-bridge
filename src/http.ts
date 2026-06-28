@@ -3,7 +3,11 @@ import { BrokerError, SessionBroker, type CreateSessionResult } from "./broker.j
 import { FakeRunner, type FakeRunnerOptions } from "./fake-runner.js";
 import {
   bridgeError,
+  isDangerousCommandType,
+  normalizeForegroundRunPayload,
   type BridgeError,
+  type RunPythonPayload,
+  type RunShellPayload,
   type CommandRow,
   type CommandType,
 } from "./protocol.js";
@@ -12,6 +16,7 @@ import { RunnerConnection, type RunnerTransport } from "./runner-connection.js";
 export interface BridgeHttpContext {
   broker: SessionBroker;
   adminSecret: string;
+  enableDangerousTools?: boolean;
   now?: () => Date;
   runnerTransportFactory?: (input: {
     sessionId: string;
@@ -111,7 +116,7 @@ async function dispatchRequest(
     const command = await context.broker.createCommand(
       route.sessionId,
       auth,
-      parseCommandInput(body),
+      parseCommandInput(body, { enableDangerousTools: context.enableDangerousTools === true }),
       now,
     );
     return jsonOk(201, serializeCommand(command));
@@ -328,14 +333,37 @@ async function parseJsonObject(request: Request): Promise<Record<string, unknown
   return parsed as Record<string, unknown>;
 }
 
-function parseCommandInput(body: Record<string, unknown>): {
+function parseCommandInput(
+  body: Record<string, unknown>,
+  options: { enableDangerousTools: boolean },
+): {
   type: CommandType;
   payload?: unknown;
   deadlineMs?: number;
   commandId?: string;
 } {
   const { type, payload, deadline_ms: deadlineMs, command_id: commandId } = body;
-  if (type !== "status" && type !== "ping" && type !== "gpu_status") {
+  if (typeof type !== "string") {
+    throw new HttpRouteError(
+      400,
+      bridgeError("INVALID_ARGUMENT", "Unsupported command type.", false),
+    );
+  }
+
+  if (isDangerousCommandType(type) && !options.enableDangerousTools) {
+    throw new HttpRouteError(
+      403,
+      bridgeError("TOOL_DISABLED", `${type} is disabled by local bridge policy.`, false),
+    );
+  }
+
+  if (
+    type !== "status" &&
+    type !== "ping" &&
+    type !== "gpu_status" &&
+    type !== "run_shell" &&
+    type !== "run_python"
+  ) {
     throw new HttpRouteError(
       400,
       bridgeError("INVALID_ARGUMENT", "Unsupported command type.", false),
@@ -359,12 +387,41 @@ function parseCommandInput(body: Record<string, unknown>): {
     );
   }
 
+  let normalizedPayload = payload;
+  let normalizedDeadlineMs = deadlineMs as number | undefined;
+  if (type === "run_shell" || type === "run_python") {
+    let foregroundPayload: RunShellPayload | RunPythonPayload;
+    try {
+      foregroundPayload = normalizeForegroundRunPayload(type, payload ?? {});
+    } catch (error) {
+      if (isBridgeErrorLike(error)) {
+        throw new HttpRouteError(400, error);
+      }
+      throw error;
+    }
+    normalizedPayload = foregroundPayload;
+    normalizedDeadlineMs ??= Math.ceil(foregroundPayload.timeout_sec * 1000);
+  }
+
   return {
     type,
-    payload,
-    deadlineMs: deadlineMs as number | undefined,
+    payload: normalizedPayload,
+    deadlineMs: normalizedDeadlineMs,
     commandId,
   };
+}
+
+function isBridgeErrorLike(value: unknown): value is BridgeError {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.code === "string" &&
+    typeof record.message === "string" &&
+    typeof record.retryable === "boolean"
+  );
 }
 
 function serializeSession(session: CreateSessionResult): {

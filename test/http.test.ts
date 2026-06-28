@@ -33,9 +33,16 @@ interface CommandData {
   state_history: string[];
 }
 
-function createHarness(): { broker: SessionBroker; handler: BridgeHttpHandler } {
+function createHarness(options: { enableDangerousTools?: boolean } = {}): {
+  broker: SessionBroker;
+  handler: BridgeHttpHandler;
+} {
   const broker = new SessionBroker();
-  const handler = createBridgeHttpHandler({ broker, adminSecret });
+  const handler = createBridgeHttpHandler({
+    broker,
+    adminSecret,
+    enableDangerousTools: options.enableDangerousTools,
+  });
   return { broker, handler };
 }
 
@@ -204,6 +211,70 @@ test("commands route validates JSON and rejects unsupported command types", asyn
   const unsupportedEnvelope = await readEnvelope(unsupported);
   assert.equal(unsupported.status, 400);
   assert.equal(unsupportedEnvelope.error?.code, "INVALID_ARGUMENT");
+});
+
+test("dangerous command types are rejected by default through HTTP", async () => {
+  const { handler } = createHarness();
+  const session = await createSession(handler);
+
+  const response = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "dangerous_default"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "run_shell", payload: { command: "echo no" } }),
+    }),
+  );
+  const envelope = await readEnvelope(response);
+
+  assert.equal(response.status, 403);
+  assert.equal(envelope.error?.code, "TOOL_DISABLED");
+});
+
+test("dangerous command types are accepted through HTTP when explicitly enabled", async () => {
+  const { broker, handler } = createHarness({ enableDangerousTools: true });
+  const session = await createSession(handler);
+  attachFakeRunnerForTest({
+    broker,
+    sessionId: session.session_id,
+    runnerToken: session.runner_token,
+  });
+
+  const shell = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "dangerous_shell_enabled"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "run_shell", payload: { command: "printf http-shell" } }),
+    }),
+  );
+  const shellEnvelope = await readEnvelope<CommandData>(shell);
+  const shellResult = shellEnvelope.data?.result_payload as { stdout: string; exit_code: number };
+  assert.equal(shell.status, 201);
+  assert.equal(shellEnvelope.data?.type, "run_shell");
+  assert.equal(shellResult.stdout, "http-shell");
+  assert.equal(shellResult.exit_code, 0);
+
+  const python = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "dangerous_python_enabled"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "run_python", payload: { code: "print('http-python')" } }),
+    }),
+  );
+  const pythonEnvelope = await readEnvelope<CommandData>(python);
+  const pythonResult = pythonEnvelope.data?.result_payload as { stdout: string; exit_code: number };
+  assert.equal(python.status, 201);
+  assert.equal(pythonEnvelope.data?.type, "run_python");
+  assert.equal(pythonResult.stdout, "http-python\n");
+  assert.equal(pythonResult.exit_code, 0);
 });
 
 test("command result can be polled after original command response", async () => {

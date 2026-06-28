@@ -11,6 +11,7 @@ import { type RunnerTransport } from "./runner-connection.js";
 
 export interface BridgeWorkerEnv {
   ADMIN_SECRET?: string;
+  COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS?: string;
   COLAB_BRIDGE_SESSIONS?: DurableObjectNamespaceLike;
 }
 
@@ -71,6 +72,7 @@ export function createWorkerFetchHandler(
   env: BridgeWorkerEnv = {},
   options: {
     broker?: SessionBroker;
+    enableDangerousTools?: boolean;
     runnerTransportFactory?: (input: {
       sessionId: string;
       runnerInstanceId: string;
@@ -82,6 +84,7 @@ export function createWorkerFetchHandler(
       return createBridgeHttpHandler({
         broker: options.broker ?? getFallbackBroker(env),
         adminSecret: readAdminSecret(env) ?? "",
+        enableDangerousTools: resolveDangerousToolsEnabled(env, options),
       })(request);
     }
 
@@ -103,6 +106,7 @@ export function createWorkerFetchHandler(
     return createBridgeHttpHandler({
       broker: options.broker ?? getFallbackBroker(env),
       adminSecret,
+      enableDangerousTools: resolveDangerousToolsEnabled(env, options),
       runnerTransportFactory: options.runnerTransportFactory,
     })(request);
   };
@@ -128,6 +132,7 @@ export class ColabBridgeSessionDurableObject {
       return createBridgeHttpHandler({
         broker: this.broker,
         adminSecret: readAdminSecret(this.env) ?? "",
+        enableDangerousTools: resolveDangerousToolsEnabled(this.env),
       })(request);
     }
 
@@ -148,6 +153,7 @@ export class ColabBridgeSessionDurableObject {
     const response = await createBridgeHttpHandler({
       broker: this.broker,
       adminSecret,
+      enableDangerousTools: resolveDangerousToolsEnabled(this.env),
     })(request);
     await this.persistState();
     return response;
@@ -218,6 +224,17 @@ function readAdminSecret(env: BridgeWorkerEnv): string | null {
   return typeof env.ADMIN_SECRET === "string" && env.ADMIN_SECRET.length > 0
     ? env.ADMIN_SECRET
     : null;
+}
+
+function resolveDangerousToolsEnabled(
+  env: BridgeWorkerEnv,
+  options: { enableDangerousTools?: boolean } = {},
+): boolean {
+  if (options.enableDangerousTools !== undefined) {
+    return options.enableDangerousTools;
+  }
+
+  return env.COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS === "1";
 }
 
 function routeDurableObjectRequest(

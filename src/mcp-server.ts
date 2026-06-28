@@ -1,12 +1,19 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as processStdin, stdout as processStdout } from "node:process";
 import { pathToFileURL } from "node:url";
-import { bridgeError, type BridgeError } from "./protocol.js";
+import {
+  bridgeError,
+  normalizeForegroundRunPayload,
+  type BridgeError,
+  type RunPythonPayload,
+  type RunShellPayload,
+} from "./protocol.js";
 import { type BridgeHttpHandler } from "./http.js";
 import {
   callToolError,
   callToolSuccess,
   disabledToolResult,
+  isEnabledDangerousExecutionTool,
   toolByName,
   toolDefinitions,
   type CallToolResult,
@@ -47,6 +54,7 @@ export type JsonRpcResponse = JsonRpcSuccessResponse | JsonRpcErrorResponse;
 export interface ColabMcpServerOptions {
   config?: LocalBridgeConfig;
   configLoader?: () => LocalBridgeConfig;
+  enableDangerousTools?: boolean;
   httpHandler?: BridgeHttpHandler;
   httpClientOptions?: Omit<BridgeHttpClientOptions, "handler">;
 }
@@ -125,7 +133,7 @@ export class ColabMcpServer {
         );
       }
 
-      if (!tool.enabledByDefault) {
+      if (!tool.enabledByDefault && !this.isToolEnabledByLocalPolicy(tool.name)) {
         return disabledToolResult(params.name);
       }
 
@@ -173,6 +181,39 @@ export class ColabMcpServer {
         return callToolSuccess("GPU status command succeeded.", command);
       }
 
+      if (tool.name === "colab_run_shell" || tool.name === "colab_run_python") {
+        let payload: RunShellPayload | RunPythonPayload;
+        try {
+          payload = normalizeForegroundRunPayload(
+            tool.name === "colab_run_shell" ? "run_shell" : "run_python",
+            params.arguments,
+          );
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const response = await this.clientRequest((client) =>
+          tool.name === "colab_run_shell"
+            ? client.createRunShellCommand(payload as RunShellPayload)
+            : client.createRunPythonCommand(payload as RunPythonPayload),
+        );
+        if (!response.ok) {
+          return callToolError(
+            response.error ?? bridgeError("INTERNAL_ERROR", "Bridge foreground command failed.", false),
+          );
+        }
+
+        const command = response.data;
+        if (command?.error) {
+          return callToolError(command.error);
+        }
+
+        return callToolSuccess("Foreground command completed.", command);
+      }
+
       return disabledToolResult(params.name);
     } catch (error) {
       if (error instanceof BridgeConfigError) {
@@ -207,6 +248,27 @@ export class ColabMcpServer {
 
     this.config = this.options.configLoader();
     return this.config;
+  }
+
+  private isToolEnabledByLocalPolicy(toolName: string): boolean {
+    if (!isEnabledDangerousExecutionTool(toolName)) {
+      return false;
+    }
+
+    if (this.options.enableDangerousTools !== undefined) {
+      return this.options.enableDangerousTools;
+    }
+
+    if (this.config) {
+      return this.config.enableDangerousTools;
+    }
+
+    if (!this.options.configLoader) {
+      return false;
+    }
+
+    this.config = this.options.configLoader();
+    return this.config.enableDangerousTools;
   }
 }
 
@@ -318,6 +380,19 @@ function toJsonRpcDispatchError(error: unknown): JsonRpcDispatchError {
   }
 
   return new JsonRpcDispatchError(-32603, "Internal error");
+}
+
+function isBridgeErrorLike(value: unknown): value is BridgeError {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.code === "string" &&
+    typeof record.message === "string" &&
+    typeof record.retryable === "boolean"
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

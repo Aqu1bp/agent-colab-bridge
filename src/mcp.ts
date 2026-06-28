@@ -96,14 +96,14 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "colab_run_shell",
-    description: "Disabled dangerous shell execution placeholder.",
+    description: "Run a short foreground shell command in the connected Colab runner when explicitly enabled.",
     inputSchema: {
       type: "object",
       required: ["command"],
       properties: {
         command: { type: "string" },
-        timeout_sec: { type: "number" },
-        max_output_bytes: { type: "number" },
+        timeout_sec: { type: "number", default: 30, maximum: 120 },
+        max_output_bytes: { type: "integer", default: 20480, maximum: 20480 },
       },
       additionalProperties: false,
     },
@@ -113,14 +113,14 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "colab_run_python",
-    description: "Disabled dangerous Python execution placeholder.",
+    description: "Run short foreground Python code in the connected Colab runner when explicitly enabled.",
     inputSchema: {
       type: "object",
       required: ["code"],
       properties: {
         code: { type: "string" },
-        timeout_sec: { type: "number" },
-        max_output_bytes: { type: "number" },
+        timeout_sec: { type: "number", default: 30, maximum: 120 },
+        max_output_bytes: { type: "integer", default: 20480, maximum: 20480 },
       },
       additionalProperties: false,
     },
@@ -183,6 +183,10 @@ export const toolDefinitions: ToolDefinition[] = [
 
 export function toolByName(name: string): ToolDefinition | undefined {
   return toolDefinitions.find((tool) => tool.name === name);
+}
+
+export function isEnabledDangerousExecutionTool(name: string): boolean {
+  return name === "colab_run_shell" || name === "colab_run_python";
 }
 
 export function callToolSuccess<TData>(text: string, data: TData): CallToolResult<TData> {

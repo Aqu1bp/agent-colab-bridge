@@ -41,7 +41,12 @@ export const errorCodes = [
 
 export type ErrorCode = (typeof errorCodes)[number];
 
-export type CommandType = "status" | "ping" | "gpu_status";
+export type CommandType = "status" | "ping" | "gpu_status" | "run_shell" | "run_python";
+
+export const DEFAULT_FOREGROUND_TIMEOUT_SEC = 30;
+export const MAX_FOREGROUND_TIMEOUT_SEC = 120;
+export const DEFAULT_MAX_OUTPUT_BYTES = 20 * 1024;
+export const MAX_OUTPUT_BYTES = 20 * 1024;
 
 export interface BridgeError {
   code: ErrorCode;
@@ -102,6 +107,27 @@ export interface GpuStatusPayload {
     utilization_gpu_percent: number | null;
   }>;
   raw: string;
+}
+
+export interface RunShellPayload {
+  command: string;
+  timeout_sec: number;
+  max_output_bytes: number;
+}
+
+export interface RunPythonPayload {
+  code: string;
+  timeout_sec: number;
+  max_output_bytes: number;
+}
+
+export interface ForegroundRunResultPayload {
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  duration_ms: number;
+  timed_out: boolean;
+  truncated: boolean;
 }
 
 export function bridgeError(
@@ -196,7 +222,100 @@ export function isFinalCommandState(state: CommandState): boolean {
 }
 
 export function assertCommandType(value: string): asserts value is CommandType {
-  if (value !== "status" && value !== "ping" && value !== "gpu_status") {
+  if (
+    value !== "status" &&
+    value !== "ping" &&
+    value !== "gpu_status" &&
+    value !== "run_shell" &&
+    value !== "run_python"
+  ) {
     throw bridgeError("INVALID_ARGUMENT", `Unsupported command type: ${value}`);
   }
+}
+
+export function isDangerousCommandType(value: string): value is "run_shell" | "run_python" {
+  return value === "run_shell" || value === "run_python";
+}
+
+export function normalizeForegroundRunPayload(
+  type: "run_shell" | "run_python",
+  payload: unknown,
+): RunShellPayload | RunPythonPayload {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw bridgeError("INVALID_ARGUMENT", "Foreground command payload must be an object.");
+  }
+
+  const record = payload as Record<string, unknown>;
+  const source = type === "run_shell" ? record.command : record.code;
+  const sourceName = type === "run_shell" ? "command" : "code";
+  if (typeof source !== "string" || source.length === 0) {
+    throw bridgeError("INVALID_ARGUMENT", `${sourceName} must be a non-empty string.`);
+  }
+
+  const timeoutSec = normalizePositiveNumber(
+    record.timeout_sec,
+    "timeout_sec",
+    DEFAULT_FOREGROUND_TIMEOUT_SEC,
+    MAX_FOREGROUND_TIMEOUT_SEC,
+  );
+  const maxOutputBytes = normalizePositiveInteger(
+    record.max_output_bytes,
+    "max_output_bytes",
+    DEFAULT_MAX_OUTPUT_BYTES,
+    MAX_OUTPUT_BYTES,
+  );
+
+  if (type === "run_shell") {
+    return {
+      command: source,
+      timeout_sec: timeoutSec,
+      max_output_bytes: maxOutputBytes,
+    };
+  }
+
+  return {
+    code: source,
+    timeout_sec: timeoutSec,
+    max_output_bytes: maxOutputBytes,
+  };
+}
+
+function normalizePositiveNumber(
+  value: unknown,
+  name: string,
+  defaultValue: number,
+  maxValue: number,
+): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > maxValue) {
+    throw bridgeError("INVALID_ARGUMENT", `${name} must be a positive number no greater than ${maxValue}.`);
+  }
+
+  return value;
+}
+
+function normalizePositiveInteger(
+  value: unknown,
+  name: string,
+  defaultValue: number,
+  maxValue: number,
+): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    value > maxValue
+  ) {
+    throw bridgeError("INVALID_ARGUMENT", `${name} must be a positive integer no greater than ${maxValue}.`);
+  }
+
+  return value;
 }

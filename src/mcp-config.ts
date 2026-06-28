@@ -6,6 +6,7 @@ export interface LocalBridgeConfig {
   baseUrl: string;
   sessionId: string;
   controllerToken: string;
+  enableDangerousTools: boolean;
 }
 
 export class BridgeConfigError extends Error {
@@ -28,6 +29,10 @@ export function parseLocalBridgeConfig(raw: unknown): LocalBridgeConfig {
   const baseUrl = stringField(record, "base_url") ?? stringField(record, "worker_url");
   const sessionId = stringField(record, "session_id");
   const controllerToken = stringField(record, "controller_token");
+  const enableDangerousTools =
+    booleanField(record, "enableDangerousTools") ??
+    booleanField(record, "enable_dangerous_tools") ??
+    false;
   const missing = [
     !baseUrl ? "base_url or worker_url" : null,
     !sessionId ? "session_id" : null,
@@ -42,6 +47,7 @@ export function parseLocalBridgeConfig(raw: unknown): LocalBridgeConfig {
     baseUrl: baseUrl!,
     sessionId: sessionId!,
     controllerToken: controllerToken!,
+    enableDangerousTools,
   };
 }
 
@@ -54,9 +60,14 @@ export function loadLocalBridgeConfig(
     worker_url: env.COLAB_MCP_BRIDGE_WORKER_URL,
     session_id: env.COLAB_MCP_BRIDGE_SESSION_ID,
     controller_token: env.COLAB_MCP_BRIDGE_CONTROLLER_TOKEN,
+    enable_dangerous_tools: env.COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS,
   };
 
-  if (Object.values(envConfig).some((value) => value !== undefined)) {
+  const hasCompleteEnvConfig =
+    (envConfig.base_url !== undefined || envConfig.worker_url !== undefined) &&
+    envConfig.session_id !== undefined &&
+    envConfig.controller_token !== undefined;
+  if (hasCompleteEnvConfig) {
     return parseLocalBridgeConfig(envConfig);
   }
 
@@ -78,10 +89,37 @@ export function loadLocalBridgeConfig(
     throw new BridgeConfigError("MCP bridge config file must contain valid JSON.");
   }
 
-  return parseLocalBridgeConfig(parsed);
+  const fileConfig = parseLocalBridgeConfig(parsed);
+  return parseLocalBridgeConfig({
+    base_url: envConfig.base_url ?? (envConfig.worker_url ? undefined : fileConfig.baseUrl),
+    worker_url: envConfig.worker_url,
+    session_id: envConfig.session_id ?? fileConfig.sessionId,
+    controller_token: envConfig.controller_token ?? fileConfig.controllerToken,
+    enable_dangerous_tools: envConfig.enable_dangerous_tools ?? fileConfig.enableDangerousTools,
+  });
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function booleanField(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off", ""].includes(normalized)) {
+    return false;
+  }
+
+  throw new BridgeConfigError(`${key} must be a boolean or 1/0-style flag.`);
 }

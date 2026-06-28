@@ -329,11 +329,11 @@ test("Worker Durable Object binding persists nonce replay state", async () => {
   assert.equal(replayEnvelope.error?.code, "REPLAY_DETECTED");
 });
 
-test("Worker command route exposes only safe command types", async () => {
+test("Worker command route disables dangerous command types by default", async () => {
   const env = { ADMIN_SECRET: adminSecret };
   const session = await createSession(env);
 
-  const unsupported = await fetchWorker(
+  const disabled = await fetchWorker(
     env,
     new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
       method: "POST",
@@ -341,13 +341,13 @@ test("Worker command route exposes only safe command types", async () => {
         ...controllerHeaders(session.controller_token, "worker_unsafe_command"),
         "content-type": "application/json",
       },
-      body: JSON.stringify({ type: "colab_run_shell", payload: { command: "echo no" } }),
+      body: JSON.stringify({ type: "run_shell", payload: { command: "echo no" } }),
     }),
   );
-  const envelope = await readEnvelope(unsupported);
+  const envelope = await readEnvelope(disabled);
 
-  assert.equal(unsupported.status, 400);
-  assert.equal(envelope.error?.code, "INVALID_ARGUMENT");
+  assert.equal(disabled.status, 403);
+  assert.equal(envelope.error?.code, "TOOL_DISABLED");
 });
 
 test("Worker runner/ws route requires runner auth and authenticated attach updates status", async () => {

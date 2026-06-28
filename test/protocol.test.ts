@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   createCommandEnvelope,
   createResultEnvelope,
+  normalizeForegroundRunPayload,
   payloadHash,
 } from "../src/protocol.js";
 
@@ -55,6 +56,54 @@ test("protocol helpers support gpu_status command envelopes", () => {
 
   assert.equal(command.type, "gpu_status");
   assert.equal(result.type, "gpu_status_result");
+});
+
+test("protocol helpers support run_shell and run_python command envelopes", () => {
+  const shell = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_shell",
+    type: "run_shell",
+    payload: { command: "echo hi", timeout_sec: 30, max_output_bytes: 1024 },
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+  const python = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_python",
+    type: "run_python",
+    payload: { code: "print('hi')", timeout_sec: 30, max_output_bytes: 1024 },
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+
+  assert.equal(createResultEnvelope({ command: shell, ok: true, payload: {} }).type, "run_shell_result");
+  assert.equal(createResultEnvelope({ command: python, ok: true, payload: {} }).type, "run_python_result");
+});
+
+test("foreground command payload validation applies defaults and caps", () => {
+  assert.deepEqual(normalizeForegroundRunPayload("run_shell", { command: "pwd" }), {
+    command: "pwd",
+    timeout_sec: 30,
+    max_output_bytes: 20 * 1024,
+  });
+  assert.deepEqual(normalizeForegroundRunPayload("run_python", { code: "print(1)" }), {
+    code: "print(1)",
+    timeout_sec: 30,
+    max_output_bytes: 20 * 1024,
+  });
+
+  assert.throws(() =>
+    normalizeForegroundRunPayload("run_shell", {
+      command: "sleep 999",
+      timeout_sec: 121,
+    }),
+  );
+  assert.throws(() =>
+    normalizeForegroundRunPayload("run_python", {
+      code: "print('too much')",
+      max_output_bytes: 20 * 1024 + 1,
+    }),
+  );
 });
 
 test("payload hashes are stable regardless of object key order", () => {

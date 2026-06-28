@@ -1,12 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SessionBroker } from "../src/broker.js";
 import {
   attachFakeRunnerForTest,
   createBridgeHttpHandler,
   type BridgeHttpHandler,
 } from "../src/http.js";
-import { parseLocalBridgeConfig, type LocalBridgeConfig } from "../src/mcp-config.js";
+import {
+  loadLocalBridgeConfig,
+  parseLocalBridgeConfig,
+  type LocalBridgeConfig,
+} from "../src/mcp-config.js";
 import {
   ColabMcpServer,
   InMemoryMcpTransport,
@@ -32,9 +39,16 @@ interface CreatedSession {
 
 type RpcSuccess = JsonRpcSuccessResponse;
 
-function createHarness(): { broker: SessionBroker; handler: BridgeHttpHandler } {
+function createHarness(options: { enableDangerousTools?: boolean } = {}): {
+  broker: SessionBroker;
+  handler: BridgeHttpHandler;
+} {
   const broker = new SessionBroker();
-  const handler = createBridgeHttpHandler({ broker, adminSecret });
+  const handler = createBridgeHttpHandler({
+    broker,
+    adminSecret,
+    enableDangerousTools: options.enableDangerousTools,
+  });
   return { broker, handler };
 }
 
@@ -51,11 +65,12 @@ async function createSession(handler: BridgeHttpHandler): Promise<CreatedSession
   return envelope.data;
 }
 
-function serverConfig(session: CreatedSession): LocalBridgeConfig {
+function serverConfig(session: CreatedSession, options: { enableDangerousTools?: boolean } = {}): LocalBridgeConfig {
   return {
     baseUrl,
     sessionId: session.session_id,
     controllerToken: session.controller_token,
+    enableDangerousTools: options.enableDangerousTools === true,
   };
 }
 
@@ -242,6 +257,66 @@ test("disabled dangerous tool returns TOOL_DISABLED MCP error result", async () 
   assert.equal(result.structuredContent.error?.code, "TOOL_DISABLED");
 });
 
+test("enabled dangerous MCP tools execute through the HTTP command path", async () => {
+  const { broker, handler } = createHarness({ enableDangerousTools: true });
+  const session = await createSession(handler);
+  attachFakeRunnerForTest({ broker, sessionId: session.session_id, runnerToken: session.runner_token });
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      config: serverConfig(session, { enableDangerousTools: true }),
+      httpHandler: handler,
+    }),
+  );
+
+  const shell = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_run_shell",
+      arguments: { command: "printf mcp-shell" },
+    }),
+  );
+  const shellData = shell.structuredContent.data as {
+    type: string;
+    result_payload: { stdout: string; exit_code: number };
+  };
+  assert.equal(shell.isError, false);
+  assert.equal(shellData.type, "run_shell");
+  assert.equal(shellData.result_payload.stdout, "mcp-shell");
+  assert.equal(shellData.result_payload.exit_code, 0);
+
+  const python = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_run_python",
+      arguments: { code: "print('mcp-python')" },
+    }),
+  );
+  const pythonData = python.structuredContent.data as {
+    type: string;
+    result_payload: { stdout: string; exit_code: number };
+  };
+  assert.equal(python.isError, false);
+  assert.equal(pythonData.type, "run_python");
+  assert.equal(pythonData.result_payload.stdout, "mcp-python\n");
+  assert.equal(pythonData.result_payload.exit_code, 0);
+});
+
+test("MCP dangerous tool stays disabled when HTTP is enabled but local config is not", async () => {
+  const { broker, handler } = createHarness({ enableDangerousTools: true });
+  const session = await createSession(handler);
+  attachFakeRunnerForTest({ broker, sessionId: session.session_id, runnerToken: session.runner_token });
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({ config: serverConfig(session), httpHandler: handler }),
+  );
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_run_shell",
+    arguments: { command: "printf no" },
+  });
+  const result = callToolResult(response);
+
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error?.code, "TOOL_DISABLED");
+});
+
 test("tools/call accepts MCP _meta object as argument carrier", async () => {
   const transport = new InMemoryMcpTransport(new ColabMcpServer());
 
@@ -301,6 +376,52 @@ test("local config parser accepts worker_url as the base URL alias", () => {
       baseUrl: "https://worker.example",
       sessionId: "sess_test",
       controllerToken: "br_test",
+      enableDangerousTools: false,
     },
   );
+});
+
+test("local config parser accepts explicit dangerous tool enablement flags", () => {
+  assert.equal(
+    parseLocalBridgeConfig({
+      worker_url: "https://worker.example",
+      session_id: "sess_test",
+      controller_token: "br_test",
+      enable_dangerous_tools: "1",
+    }).enableDangerousTools,
+    true,
+  );
+});
+
+test("local config loader applies env dangerous flag over JSON config file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "colab-mcp-config-"));
+  const configPath = join(directory, "config.json");
+  try {
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        worker_url: "https://worker.example",
+        session_id: "sess_test",
+        controller_token: "br_test",
+      }),
+      "utf8",
+    );
+
+    assert.deepEqual(
+      loadLocalBridgeConfig({
+        configPath,
+        env: {
+          COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS: "1",
+        },
+      }),
+      {
+        baseUrl: "https://worker.example",
+        sessionId: "sess_test",
+        controllerToken: "br_test",
+        enableDangerousTools: true,
+      },
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
