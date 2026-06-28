@@ -52,6 +52,14 @@ export class BridgeHttpClient {
     );
   }
 
+  async createGpuStatusCommand(): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.request<BridgeCommandData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
+      { type: "gpu_status" },
+    );
+  }
+
   private async request<TData>(
     method: string,
     path: string,

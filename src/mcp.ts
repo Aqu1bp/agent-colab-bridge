@@ -87,6 +87,14 @@ export const toolDefinitions: ToolDefinition[] = [
     enabledByDefault: true,
   },
   {
+    name: "colab_gpu_status",
+    description: "Run the fixed read-only GPU status probe in the connected Colab runner.",
+    inputSchema: emptyObjectSchema,
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+  {
     name: "colab_run_shell",
     description: "Disabled dangerous shell execution placeholder.",
     inputSchema: {

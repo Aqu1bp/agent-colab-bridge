@@ -176,6 +176,37 @@ test("colab_ping creates a ping command and returns the serialized command resul
   assert.deepEqual(data.result_payload, { ok: true, pong: true });
 });
 
+test("colab_gpu_status creates a gpu_status command and returns the serialized command result", async () => {
+  const { broker, handler } = createHarness();
+  const session = await createSession(handler);
+  attachFakeRunnerForTest({ broker, sessionId: session.session_id, runnerToken: session.runner_token });
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({ config: serverConfig(session), httpHandler: handler }),
+  );
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_gpu_status",
+    arguments: {},
+  });
+  const result = callToolResult(response);
+  const data = result.structuredContent.data as {
+    type: string;
+    state: string;
+    result_payload: {
+      available: boolean;
+      source: string;
+      gpus: Array<{ name: string }>;
+    };
+  };
+
+  assert.equal(result.isError, false);
+  assert.equal(data.type, "gpu_status");
+  assert.equal(data.state, "succeeded");
+  assert.equal(data.result_payload.available, true);
+  assert.equal(data.result_payload.source, "fake");
+  assert.equal(data.result_payload.gpus[0]?.name, "Fake Colab GPU");
+});
+
 test("duplicate MCP calls generate fresh HTTP nonce values", async () => {
   const { broker, handler } = createHarness();
   const session = await createSession(handler);

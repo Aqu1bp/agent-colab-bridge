@@ -108,6 +108,94 @@ test("fake runner status command returns authenticated runner metadata", async (
   assert.equal(status.runner_instance_id, "runner_status");
 });
 
+test("fake runner gpu_status command returns deterministic GPU payload", async () => {
+  const broker = new SessionBroker();
+  const session = broker.createSession();
+  const controllerAuth = authFactory(session.controllerToken, "controller");
+  const runnerAuth = authFactory(session.runnerToken, "runner");
+  new FakeRunner(broker, session.sessionId, runnerAuth).attach();
+
+  const command = await broker.createCommand(session.sessionId, controllerAuth(), {
+    type: "gpu_status",
+    payload: {},
+  });
+
+  assert.equal(command.state, "succeeded");
+  assert.deepEqual(command.resultPayload, {
+    available: true,
+    source: "fake",
+    gpus: [
+      {
+        index: 0,
+        name: "Fake Colab GPU",
+        memory_total_mb: 16384,
+        memory_used_mb: 1024,
+        utilization_gpu_percent: 7,
+      },
+    ],
+    raw: "Fake Colab GPU, 16384 MiB, 1024 MiB, 7 %",
+  });
+});
+
+test("runner reconnect and restart update metadata explicitly", () => {
+  const broker = new SessionBroker();
+  const session = broker.createSession(new Date("2026-06-28T10:00:00.000Z"));
+
+  broker.attachRunner(
+    session.sessionId,
+    authAt(session.runnerToken, "runner_attach", new Date("2026-06-28T10:00:02.000Z")),
+    {
+      runnerInstanceId: "runner_same",
+      kernelStartedAt: "2026-06-28T10:00:00.000Z",
+      runnerStartedAt: "2026-06-28T10:00:01.000Z",
+    },
+    () => {
+      throw new Error("not used");
+    },
+    new Date("2026-06-28T10:00:02.000Z"),
+  );
+  broker.attachRunner(
+    session.sessionId,
+    authAt(session.runnerToken, "runner_reconnect", new Date("2026-06-28T10:00:04.000Z")),
+    {
+      runnerInstanceId: "runner_same",
+      kernelStartedAt: "2026-06-28T10:00:00.000Z",
+      runnerStartedAt: "2026-06-28T10:00:03.000Z",
+    },
+    () => {
+      throw new Error("not used");
+    },
+    new Date("2026-06-28T10:00:04.000Z"),
+  );
+  broker.attachRunner(
+    session.sessionId,
+    authAt(session.runnerToken, "runner_restart", new Date("2026-06-28T10:05:02.000Z")),
+    {
+      runnerInstanceId: "runner_new",
+      kernelStartedAt: "2026-06-28T10:05:00.000Z",
+      runnerStartedAt: "2026-06-28T10:05:01.000Z",
+    },
+    () => {
+      throw new Error("not used");
+    },
+    new Date("2026-06-28T10:05:02.000Z"),
+  );
+
+  const status = broker.getStatus(
+    session.sessionId,
+    authAt(session.controllerToken, "controller_status", new Date("2026-06-28T10:05:03.000Z")),
+    new Date("2026-06-28T10:05:03.000Z"),
+  );
+  assert.equal(status.runner_connected, true);
+  assert.equal(status.runner_instance_id, "runner_new");
+  assert.equal(status.kernel_started_at, "2026-06-28T10:05:00.000Z");
+
+  const auditEvents = broker.getAuditRows(session.sessionId).map((row) => row.event);
+  assert.equal(auditEvents.includes("runner_attach"), true);
+  assert.equal(auditEvents.includes("runner_reconnect"), true);
+  assert.equal(auditEvents.includes("runner_restart"), true);
+});
+
 test("duplicate command id returns existing command without re-executing", async () => {
   const broker = new SessionBroker();
   const session = broker.createSession();

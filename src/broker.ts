@@ -2,10 +2,12 @@ import {
   AuthFailure,
   generateToken,
   hashToken,
+  validateTimestamp,
   type AuthAttempt,
   type NonceRepository,
   InMemoryNonceRepository,
   validateAuthenticatedRequest,
+  verifyToken,
 } from "./auth.js";
 import {
   bridgeError,
@@ -209,6 +211,12 @@ export class SessionBroker {
     now = new Date(),
   ): void {
     const session = this.requireRunner(sessionId, auth, now);
+    const attachEvent =
+      session.runnerInstanceId === null
+        ? "runner_attach"
+        : session.runnerInstanceId === metadata.runnerInstanceId
+          ? "runner_reconnect"
+          : "runner_restart";
     session.runnerConnected = true;
     session.runnerInstanceId = metadata.runnerInstanceId;
     session.kernelStartedAt = metadata.kernelStartedAt;
@@ -219,7 +227,7 @@ export class SessionBroker {
     this.audit({
       sessionId,
       at: now.toISOString(),
-      event: "runner_attach",
+      event: attachEvent,
       callerSide: "runner",
       outcome: "accepted",
     });
@@ -229,6 +237,32 @@ export class SessionBroker {
     const session = this.requireRunner(sessionId, auth, now);
     session.lastHeartbeatAt = now.toISOString();
     this.repository.updateSession(session);
+  }
+
+  authenticateRunner(sessionId: string, auth: AuthAttempt, now = new Date()): void {
+    this.requireRunner(sessionId, auth, now);
+  }
+
+  preflightRunnerAuth(sessionId: string, auth: AuthAttempt, now = new Date()): void {
+    const session = this.requireLiveSession(sessionId, now);
+    try {
+      validateTimestamp(auth.timestamp, {
+        now,
+        skewMs: this.options.authSkewMs,
+      });
+      if (!verifyToken(auth.token, session.runnerTokenHash)) {
+        throw new AuthFailure(bridgeError("UNAUTHORIZED", "Invalid credentials."));
+      }
+      if (!auth.nonce) {
+        throw new AuthFailure(bridgeError("UNAUTHORIZED", "Missing auth nonce."));
+      }
+      if (this.nonceRepository.hasNonce(sessionId, "runner", auth.nonce)) {
+        throw new AuthFailure(bridgeError("REPLAY_DETECTED", "Nonce has already been used."));
+      }
+    } catch (error) {
+      this.auditAuthFailure(sessionId, "runner", now, error);
+      throw this.toBrokerError(error);
+    }
   }
 
   async createCommand(

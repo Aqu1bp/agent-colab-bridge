@@ -7,6 +7,7 @@ import {
 } from "./broker.js";
 import { createBridgeHttpHandler, type BridgeHttpHandler } from "./http.js";
 import { bridgeError, newId, type CommandRow } from "./protocol.js";
+import { type RunnerTransport } from "./runner-connection.js";
 
 export interface BridgeWorkerEnv {
   ADMIN_SECRET?: string;
@@ -68,7 +69,13 @@ export default {
 
 export function createWorkerFetchHandler(
   env: BridgeWorkerEnv = {},
-  options: { broker?: SessionBroker } = {},
+  options: {
+    broker?: SessionBroker;
+    runnerTransportFactory?: (input: {
+      sessionId: string;
+      runnerInstanceId: string;
+    }) => RunnerTransport;
+  } = {},
 ): BridgeHttpHandler {
   return async (request: Request): Promise<Response> => {
     if (isHealthRequest(request)) {
@@ -96,6 +103,7 @@ export function createWorkerFetchHandler(
     return createBridgeHttpHandler({
       broker: options.broker ?? getFallbackBroker(env),
       adminSecret,
+      runnerTransportFactory: options.runnerTransportFactory,
     })(request);
   };
 }

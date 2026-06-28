@@ -157,6 +157,22 @@ export class ColabMcpServer {
         return callToolSuccess("Ping command succeeded.", command);
       }
 
+      if (tool.name === "colab_gpu_status") {
+        const response = await this.clientRequest((client) => client.createGpuStatusCommand());
+        if (!response.ok) {
+          return callToolError(
+            response.error ?? bridgeError("INTERNAL_ERROR", "Bridge GPU status failed.", false),
+          );
+        }
+
+        const command = response.data;
+        if (command?.error) {
+          return callToolError(command.error);
+        }
+
+        return callToolSuccess("GPU status command succeeded.", command);
+      }
+
       return disabledToolResult(params.name);
     } catch (error) {
       if (error instanceof BridgeConfigError) {

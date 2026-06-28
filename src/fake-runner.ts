@@ -1,4 +1,9 @@
-import { createResultEnvelope, type CommandEnvelope, type ResultEnvelope } from "./protocol.js";
+import {
+  createResultEnvelope,
+  type CommandEnvelope,
+  type GpuStatusPayload,
+  type ResultEnvelope,
+} from "./protocol.js";
 import { type AuthAttempt } from "./auth.js";
 import { type SessionBroker } from "./broker.js";
 
@@ -49,6 +54,14 @@ export class FakeRunner {
       });
     }
 
+    if (envelope.type === "gpu_status") {
+      return createResultEnvelope({
+        command: envelope,
+        ok: true,
+        payload: fakeGpuStatus(),
+      });
+    }
+
     return createResultEnvelope({
       command: envelope,
       ok: true,
@@ -61,4 +74,21 @@ export class FakeRunner {
       },
     });
   }
+}
+
+export function fakeGpuStatus(): GpuStatusPayload {
+  return {
+    available: true,
+    source: "fake",
+    gpus: [
+      {
+        index: 0,
+        name: "Fake Colab GPU",
+        memory_total_mb: 16384,
+        memory_used_mb: 1024,
+        utilization_gpu_percent: 7,
+      },
+    ],
+    raw: "Fake Colab GPU, 16384 MiB, 1024 MiB, 7 %",
+  };
 }

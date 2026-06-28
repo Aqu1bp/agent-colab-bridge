@@ -36,6 +36,27 @@ test("protocol helpers create command and result envelopes", () => {
   assert.deepEqual(result.payload, { pong: true });
 });
 
+test("protocol helpers support gpu_status command envelopes", () => {
+  const command = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_gpu",
+    type: "gpu_status",
+    payload: {},
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+
+  const result = createResultEnvelope({
+    command,
+    ok: true,
+    payload: { available: false, source: "none", gpus: [], raw: "" },
+    sentAt: "2026-06-28T10:00:01.000Z",
+  });
+
+  assert.equal(command.type, "gpu_status");
+  assert.equal(result.type, "gpu_status_result");
+});
+
 test("payload hashes are stable regardless of object key order", () => {
   assert.equal(payloadHash({ b: 2, a: 1 }), payloadHash({ a: 1, b: 2 }));
 });

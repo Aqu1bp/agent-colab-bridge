@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { attachFakeRunnerForTest } from "../src/http.js";
+import { InMemoryRunnerTransport } from "../src/runner-connection.js";
 import worker, {
   ColabBridgeSessionDurableObject,
+  createWorkerFetchHandler,
   getWorkerBrokerForTest,
   type BridgeWorkerEnv,
   type DurableObjectIdLike,
@@ -66,6 +68,27 @@ function controllerHeaders(token: string, nonce: string): HeadersInit {
     Authorization: `Bearer ${token}`,
     "X-Bridge-Timestamp": new Date().toISOString(),
     "X-Bridge-Nonce": nonce,
+  };
+}
+
+function runnerHeaders(
+  token: string,
+  nonce: string,
+  options: {
+    runnerInstanceId?: string;
+    kernelStartedAt?: string;
+    runnerStartedAt?: string;
+  } = {},
+): HeadersInit {
+  return {
+    Authorization: `Bearer ${token}`,
+    "X-Bridge-Timestamp": new Date().toISOString(),
+    "X-Bridge-Nonce": nonce,
+    "X-Bridge-Runner-Instance-Id": options.runnerInstanceId ?? "runner_worker_attach",
+    "X-Bridge-Kernel-Started-At":
+      options.kernelStartedAt ?? "2026-06-28T10:00:00.000Z",
+    "X-Bridge-Runner-Started-At":
+      options.runnerStartedAt ?? "2026-06-28T10:00:01.000Z",
   };
 }
 
@@ -327,20 +350,79 @@ test("Worker command route exposes only safe command types", async () => {
   assert.equal(envelope.error?.code, "INVALID_ARGUMENT");
 });
 
-test("Worker has no production runner attach route", async () => {
+test("Worker runner/ws route requires runner auth and authenticated attach updates status", async () => {
   const env = { ADMIN_SECRET: adminSecret };
   const session = await createSession(env);
 
-  const response = await fetchWorker(
+  const unauthenticated = await fetchWorker(
     env,
     new Request(`${baseUrl}/v1/sessions/${session.session_id}/runner/ws`, {
-      headers: controllerHeaders(session.controller_token, "worker_no_runner_ws"),
+      headers: {
+        "X-Bridge-Runner-Instance-Id": "runner_unauthenticated",
+        "X-Bridge-Kernel-Started-At": "2026-06-28T10:00:00.000Z",
+      },
     }),
   );
-  const envelope = await readEnvelope(response);
+  const unauthenticatedEnvelope = await readEnvelope(unauthenticated);
 
-  assert.equal(response.status, 404);
-  assert.equal(envelope.error?.code, "INVALID_ARGUMENT");
+  assert.equal(unauthenticated.status, 401);
+  assert.equal(unauthenticatedEnvelope.error?.code, "UNAUTHORIZED");
+
+  const broker = getWorkerBrokerForTest(env);
+  const handler = createWorkerFetchHandler(env, {
+    broker,
+    runnerTransportFactory: () =>
+      new InMemoryRunnerTransport(() => {
+        throw new Error("not used by this attach test");
+      }),
+  });
+
+  const attached = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/runner/ws`, {
+      headers: runnerHeaders(session.runner_token, "worker_runner_attach", {
+        runnerInstanceId: "runner_worker_ws",
+      }),
+    }),
+  );
+  const attachedEnvelope = await readEnvelope<{
+    runner_connected: boolean;
+    runner_instance_id: string;
+  }>(attached);
+
+  assert.equal(attached.status, 200);
+  assert.equal(attachedEnvelope.data?.runner_connected, true);
+  assert.equal(attachedEnvelope.data?.runner_instance_id, "runner_worker_ws");
+
+  const status = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/status`, {
+      headers: controllerHeaders(session.controller_token, "worker_runner_attached_status"),
+    }),
+  );
+  const statusEnvelope = await readEnvelope<{
+    runner_connected: boolean;
+    runner_instance_id: string;
+    kernel_started_at: string;
+    runner_started_at: string;
+    last_heartbeat_at: string;
+  }>(status);
+
+  assert.equal(status.status, 200);
+  assert.equal(statusEnvelope.data?.runner_connected, true);
+  assert.equal(statusEnvelope.data?.runner_instance_id, "runner_worker_ws");
+  assert.equal(statusEnvelope.data?.kernel_started_at, "2026-06-28T10:00:00.000Z");
+  assert.equal(statusEnvelope.data?.runner_started_at, "2026-06-28T10:00:01.000Z");
+  assert.equal(typeof statusEnvelope.data?.last_heartbeat_at, "string");
+
+  const replay = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/runner/ws`, {
+      headers: runnerHeaders(session.runner_token, "worker_runner_attach", {
+        runnerInstanceId: "runner_worker_ws",
+      }),
+    }),
+  );
+  const replayEnvelope = await readEnvelope(replay);
+  assert.equal(replay.status, 401);
+  assert.equal(replayEnvelope.error?.code, "REPLAY_DETECTED");
 });
 
 test("Durable Object shape persists session and nonce state through storage", async () => {

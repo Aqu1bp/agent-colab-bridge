@@ -7,11 +7,16 @@ import {
   type CommandRow,
   type CommandType,
 } from "./protocol.js";
+import { RunnerConnection, type RunnerTransport } from "./runner-connection.js";
 
 export interface BridgeHttpContext {
   broker: SessionBroker;
   adminSecret: string;
   now?: () => Date;
+  runnerTransportFactory?: (input: {
+    sessionId: string;
+    runnerInstanceId: string;
+  }) => RunnerTransport;
 }
 
 export type BridgeHttpHandler = (request: Request) => Promise<Response>;
@@ -127,6 +132,36 @@ async function dispatchRequest(
     return jsonOk(200, { revoked: true });
   }
 
+  if (route.name === "runnerAttach") {
+    const auth = parseRunnerAuth(request.headers);
+    context.broker.preflightRunnerAuth(route.sessionId, auth, now);
+    const metadata = parseRunnerMetadata(request.headers);
+    const transport = context.runnerTransportFactory?.({
+      sessionId: route.sessionId,
+      runnerInstanceId: metadata.runnerInstanceId,
+    });
+    if (!transport) {
+      context.broker.authenticateRunner(route.sessionId, auth, now);
+      return jsonError(
+        426,
+        bridgeError("RUNNER_AUTH_REQUIRED", "Runner WebSocket upgrade is required.", true),
+      );
+    }
+
+    new RunnerConnection({
+      broker: context.broker,
+      sessionId: route.sessionId,
+      auth,
+      metadata,
+      transport,
+      now,
+    }).attach();
+    return jsonOk(200, {
+      runner_connected: true,
+      runner_instance_id: metadata.runnerInstanceId,
+    });
+  }
+
   return jsonError(404, bridgeError("INVALID_ARGUMENT", "Unknown route.", false));
 }
 
@@ -137,6 +172,7 @@ type RouteMatch =
   | { name: "createCommand"; sessionId: string }
   | { name: "getCommand"; sessionId: string; commandId: string }
   | { name: "revoke"; sessionId: string }
+  | { name: "runnerAttach"; sessionId: string }
   | { name: "unknown" };
 
 function matchRoute(method: string, pathname: string): RouteMatch {
@@ -168,6 +204,10 @@ function matchRoute(method: string, pathname: string): RouteMatch {
     if (method === "POST" && parts.length === 4 && parts[3] === "revoke") {
       return { name: "revoke", sessionId };
     }
+
+    if (method === "GET" && parts.length === 5 && parts[3] === "runner" && parts[4] === "ws") {
+      return { name: "runnerAttach", sessionId };
+    }
   }
 
   return { name: "unknown" };
@@ -184,6 +224,14 @@ function requireAdminAuth(headers: Headers, adminSecret: string): void {
 }
 
 function parseControllerAuth(headers: Headers): AuthAttempt {
+  return parseSideAuth(headers);
+}
+
+function parseRunnerAuth(headers: Headers): AuthAttempt {
+  return parseSideAuth(headers);
+}
+
+function parseSideAuth(headers: Headers): AuthAttempt {
   const token = parseBearerToken(headers);
   const timestamp = headers.get("x-bridge-timestamp");
   const nonce = headers.get("x-bridge-nonce");
@@ -210,6 +258,43 @@ function parseControllerAuth(headers: Headers): AuthAttempt {
   }
 
   return { token, timestamp, nonce };
+}
+
+function parseRunnerMetadata(headers: Headers): {
+  runnerInstanceId: string;
+  kernelStartedAt: string;
+  runnerStartedAt?: string;
+} {
+  const runnerInstanceId = headers.get("x-bridge-runner-instance-id")?.trim();
+  const kernelStartedAt = headers.get("x-bridge-kernel-started-at")?.trim();
+  const runnerStartedAt = headers.get("x-bridge-runner-started-at")?.trim();
+
+  if (!runnerInstanceId) {
+    throw new HttpRouteError(
+      400,
+      bridgeError("INVALID_ARGUMENT", "Missing runner instance id.", false),
+    );
+  }
+
+  if (!kernelStartedAt || !Number.isFinite(Date.parse(kernelStartedAt))) {
+    throw new HttpRouteError(
+      400,
+      bridgeError("INVALID_ARGUMENT", "Missing or invalid kernel start time.", false),
+    );
+  }
+
+  if (runnerStartedAt && !Number.isFinite(Date.parse(runnerStartedAt))) {
+    throw new HttpRouteError(
+      400,
+      bridgeError("INVALID_ARGUMENT", "Invalid runner start time.", false),
+    );
+  }
+
+  return {
+    runnerInstanceId,
+    kernelStartedAt,
+    ...(runnerStartedAt ? { runnerStartedAt } : {}),
+  };
 }
 
 function parseBearerToken(headers: Headers): string | null {
@@ -250,7 +335,7 @@ function parseCommandInput(body: Record<string, unknown>): {
   commandId?: string;
 } {
   const { type, payload, deadline_ms: deadlineMs, command_id: commandId } = body;
-  if (type !== "status" && type !== "ping") {
+  if (type !== "status" && type !== "ping" && type !== "gpu_status") {
     throw new HttpRouteError(
       400,
       bridgeError("INVALID_ARGUMENT", "Unsupported command type.", false),

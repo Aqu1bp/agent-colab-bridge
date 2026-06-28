@@ -41,7 +41,7 @@ export const errorCodes = [
 
 export type ErrorCode = (typeof errorCodes)[number];
 
-export type CommandType = "status" | "ping";
+export type CommandType = "status" | "ping" | "gpu_status";
 
 export interface BridgeError {
   code: ErrorCode;
@@ -89,6 +89,19 @@ export interface CommandRow {
   updatedAt: string;
   runnerInstanceId: string | null;
   stateHistory: CommandState[];
+}
+
+export interface GpuStatusPayload {
+  available: boolean;
+  source: "nvidia-smi" | "torch" | "fake" | "none";
+  gpus: Array<{
+    index: number;
+    name: string;
+    memory_total_mb: number | null;
+    memory_used_mb: number | null;
+    utilization_gpu_percent: number | null;
+  }>;
+  raw: string;
 }
 
 export function bridgeError(
@@ -183,7 +196,7 @@ export function isFinalCommandState(state: CommandState): boolean {
 }
 
 export function assertCommandType(value: string): asserts value is CommandType {
-  if (value !== "status" && value !== "ping") {
+  if (value !== "status" && value !== "ping" && value !== "gpu_status") {
     throw bridgeError("INVALID_ARGUMENT", `Unsupported command type: ${value}`);
   }
 }

@@ -166,7 +166,7 @@ test("nonce replay is rejected through HTTP", async () => {
   assert.equal(envelope.error?.code, "REPLAY_DETECTED");
 });
 
-test("commands route validates JSON and supports ping/status only", async () => {
+test("commands route validates JSON and rejects unsupported command types", async () => {
   const { handler } = createHarness();
   const session = await createSession(handler);
 
@@ -279,6 +279,46 @@ test("status command type is accepted through command route", async () => {
     runner_instance_id: "runner_status_command",
     kernel_started_at: "2026-06-28T10:00:00.000Z",
     runner_started_at: "2026-06-28T10:00:01.000Z",
+  });
+});
+
+test("gpu_status command type is accepted through command route", async () => {
+  const { broker, handler } = createHarness();
+  const session = await createSession(handler);
+  attachFakeRunnerForTest({
+    broker,
+    sessionId: session.session_id,
+    runnerToken: session.runner_token,
+  });
+
+  const response = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "create_gpu_status_command"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "gpu_status" }),
+    }),
+  );
+  const envelope = await readEnvelope<CommandData>(response);
+
+  assert.equal(response.status, 201);
+  assert.equal(envelope.data?.type, "gpu_status");
+  assert.equal(envelope.data?.state, "succeeded");
+  assert.deepEqual(envelope.data?.result_payload, {
+    available: true,
+    source: "fake",
+    gpus: [
+      {
+        index: 0,
+        name: "Fake Colab GPU",
+        memory_total_mb: 16384,
+        memory_used_mb: 1024,
+        utilization_gpu_percent: 7,
+      },
+    ],
+    raw: "Fake Colab GPU, 16384 MiB, 1024 MiB, 7 %",
   });
 });
 
