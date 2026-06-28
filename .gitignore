@@ -1,2 +1,4 @@
 node_modules/
 dist/
+!plugins/codex-colab-bridge/dist/
+!plugins/codex-colab-bridge/dist/**

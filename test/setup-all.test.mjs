@@ -65,6 +65,27 @@ test("setup:all dry run can plan generated admin secret without printing it", as
   assert.doesNotMatch(text, /generated_secret/);
 });
 
+test("setup:all dry run ignores default local Worker URL unless config is explicit", async () => {
+  const options = await loadSetupAllOptions({
+    argv: ["--dry-run", "--no-bootstrap"],
+    env: {},
+    cwd: "/tmp/repo",
+    exists: (path) => path.endsWith("/.config/codex-colab-bridge/config.json"),
+    readTextFile: async () =>
+      JSON.stringify({
+        base_url: "https://private-worker.example.workers.dev",
+        session_id: "sess_private",
+        controller_token: "controller_private",
+      }),
+    generateSecret: () => "generated_secret",
+  });
+
+  const text = dryRunLines(options).join("\n");
+  assert.equal(options.baseUrl, undefined);
+  assert.match(text, /Worker URL: derived from Wrangler deploy output/);
+  assert.doesNotMatch(text, /private-worker/);
+});
+
 test("setup:all dangerous tools require explicit flag or env", async () => {
   const options = await loadSetupAllOptions({
     argv: ["--dry-run", "--config", "bridge.json"],

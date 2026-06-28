@@ -9,13 +9,34 @@
     "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
     "setup:all": "node scripts/setup-all.mjs",
     "setup:bridge": "node scripts/setup-bridge.mjs",
+    "package:plugin": "npm run build && node scripts/package-codex-plugin.mjs",
+    "prepack": "npm run package:plugin",
     "doctor": "node scripts/doctor.mjs",
     "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs",
     "test": "npm run build && node --test dist/test/*.test.js test/*.test.mjs"
   },
+  "files": [
+    ".agents/plugins/marketplace.json",
+    ".codex-plugin/",
+    ".env.example",
+    ".mcp.json",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "codex-colab-bridge-spec.md",
+    "config.example.json",
+    "plugins/codex-colab-bridge/",
+    "python/",
+    "scripts/",
+    "skills/",
+    "src/",
+    "tsconfig.json",
+    "wrangler.toml"
+  ],
   "devDependencies": {
     "@types/node": "^26.0.1",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "wrangler": "^4.76.0"
   },
   "engines": {
     "node": ">=20"

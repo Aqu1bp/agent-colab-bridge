@@ -1,0 +1,235 @@
+import { DEFAULT_JOB_LOG_BYTES, DEFAULT_READ_FILE_MAX_BYTES, DEFAULT_TAIL_MAX_BYTES, MAX_FILE_CONTENT_BYTES, MAX_JOB_LOG_BYTES, MAX_READ_FILE_BYTES, MAX_TAIL_BYTES, bridgeError, } from "./protocol.js";
+const emptyObjectSchema = {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+};
+const structuredOutputSchema = {
+    type: "object",
+    required: ["ok", "data", "error"],
+    properties: {
+        ok: { type: "boolean" },
+        data: {},
+        error: {
+            anyOf: [
+                { type: "null" },
+                {
+                    type: "object",
+                    required: ["code", "message", "retryable"],
+                    properties: {
+                        code: { type: "string" },
+                        message: { type: "string" },
+                        retryable: { type: "boolean" },
+                    },
+                },
+            ],
+        },
+    },
+};
+export const readOnlyRemoteAnnotations = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+};
+export const dangerousRemoteAnnotations = {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+};
+export const toolDefinitions = [
+    {
+        name: "colab_status",
+        description: "Return authenticated bridge and runner status.",
+        inputSchema: emptyObjectSchema,
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_ping",
+        description: "Test-only authenticated fake runner ping.",
+        inputSchema: emptyObjectSchema,
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_gpu_status",
+        description: "Run the fixed read-only GPU status probe in the connected Colab runner.",
+        inputSchema: emptyObjectSchema,
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_run_shell",
+        description: "Run a short foreground shell command in the connected Colab runner when explicitly enabled.",
+        inputSchema: {
+            type: "object",
+            required: ["command"],
+            properties: {
+                command: { type: "string" },
+                timeout_sec: { type: "number", default: 30, maximum: 120 },
+                max_output_bytes: { type: "integer", default: 20480, maximum: 20480 },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: dangerousRemoteAnnotations,
+        enabledByDefault: false,
+    },
+    {
+        name: "colab_run_python",
+        description: "Run short foreground Python code in the connected Colab runner when explicitly enabled.",
+        inputSchema: {
+            type: "object",
+            required: ["code"],
+            properties: {
+                code: { type: "string" },
+                timeout_sec: { type: "number", default: 30, maximum: 120 },
+                max_output_bytes: { type: "integer", default: 20480, maximum: 20480 },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: dangerousRemoteAnnotations,
+        enabledByDefault: false,
+    },
+    {
+        name: "colab_write_file",
+        description: "Write a small UTF-8 text file under the Colab project root when explicitly enabled.",
+        inputSchema: {
+            type: "object",
+            required: ["path", "content", "mode"],
+            properties: {
+                path: { type: "string" },
+                content: { type: "string", maxLength: MAX_FILE_CONTENT_BYTES },
+                mode: { enum: ["overwrite", "append", "create_new"] },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: dangerousRemoteAnnotations,
+        enabledByDefault: false,
+    },
+    {
+        name: "colab_read_file",
+        description: "Read a small UTF-8 text file under the Colab project root.",
+        inputSchema: {
+            type: "object",
+            required: ["path"],
+            properties: {
+                path: { type: "string" },
+                max_bytes: {
+                    type: "integer",
+                    default: DEFAULT_READ_FILE_MAX_BYTES,
+                    maximum: MAX_READ_FILE_BYTES,
+                },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_start_job",
+        description: "Start one background shell job in the connected Colab runner when explicitly enabled.",
+        inputSchema: {
+            type: "object",
+            required: ["command"],
+            properties: {
+                command: { type: "string" },
+                name: { type: "string" },
+                max_log_bytes: {
+                    type: "integer",
+                    default: DEFAULT_JOB_LOG_BYTES,
+                    maximum: MAX_JOB_LOG_BYTES,
+                },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: dangerousRemoteAnnotations,
+        enabledByDefault: false,
+    },
+    {
+        name: "colab_tail_job",
+        description: "Read bounded background job log events from the connected Colab runner.",
+        inputSchema: {
+            type: "object",
+            required: ["job_id"],
+            properties: {
+                job_id: { type: "string" },
+                cursor: { type: "integer", default: 0, minimum: 0 },
+                max_bytes: {
+                    type: "integer",
+                    default: DEFAULT_TAIL_MAX_BYTES,
+                    maximum: MAX_TAIL_BYTES,
+                },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_interrupt_job",
+        description: "Interrupt a background job process group in the connected Colab runner when explicitly enabled.",
+        inputSchema: {
+            type: "object",
+            required: ["job_id"],
+            properties: {
+                job_id: { type: "string" },
+                signal: { enum: ["SIGTERM", "SIGKILL"] },
+                kill_after_sec: {
+                    type: "number",
+                    default: 5,
+                    maximum: 30,
+                },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: dangerousRemoteAnnotations,
+        enabledByDefault: false,
+    },
+];
+export function toolByName(name) {
+    return toolDefinitions.find((tool) => tool.name === name);
+}
+export function isEnabledDangerousExecutionTool(name) {
+    return (name === "colab_run_shell" ||
+        name === "colab_run_python" ||
+        name === "colab_write_file" ||
+        name === "colab_start_job" ||
+        name === "colab_interrupt_job");
+}
+export function callToolSuccess(text, data) {
+    return {
+        content: [{ type: "text", text }],
+        structuredContent: {
+            ok: true,
+            data,
+            error: null,
+        },
+        isError: false,
+    };
+}
+export function callToolError(error) {
+    return {
+        content: [{ type: "text", text: `${error.code}: ${error.message}` }],
+        structuredContent: {
+            ok: false,
+            data: null,
+            error,
+        },
+        isError: true,
+    };
+}
+export function disabledToolResult(toolName, code = "TOOL_DISABLED") {
+    return callToolError(bridgeError(code, `${toolName} is disabled by local policy.`, false));
+}

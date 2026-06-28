@@ -109,21 +109,26 @@ export async function loadSetupAllOptions({
     parseBoolean(env.COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS, "COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS") ??
     false;
 
+  const explicitBaseUrl = firstString(
+    flags.baseUrl,
+    env.COLAB_MCP_BRIDGE_BASE_URL,
+    env.COLAB_MCP_BRIDGE_WORKER_URL,
+  );
+  const configuredBaseUrl =
+    flags.dryRun === true && !flags.config && !env.COLAB_MCP_BRIDGE_CONFIG
+      ? undefined
+      : firstString(
+          existingConfig.base_url,
+          existingConfig.worker_url,
+          existingConfig.baseUrl,
+          existingConfig.workerUrl,
+        );
+
   return {
     help: false,
     cwd,
     dryRun: flags.dryRun === true,
-    baseUrl: normalizeBaseUrl(
-      firstString(
-        flags.baseUrl,
-        env.COLAB_MCP_BRIDGE_BASE_URL,
-        env.COLAB_MCP_BRIDGE_WORKER_URL,
-        existingConfig.base_url,
-        existingConfig.worker_url,
-        existingConfig.baseUrl,
-        existingConfig.workerUrl,
-      ),
-    ),
+    baseUrl: normalizeBaseUrl(firstString(explicitBaseUrl, configuredBaseUrl)),
     adminSecret: adminSecretInput ?? generateSecret(),
     adminSecretGenerated: !adminSecretInput,
     bootstrap: flags.bootstrap !== false,
