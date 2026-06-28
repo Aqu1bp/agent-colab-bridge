@@ -9,6 +9,41 @@ npm install
 npm test
 ```
 
+## Local Setup And Doctor
+
+After deploying a Worker and configuring its `ADMIN_SECRET`, create a bridge
+session and write the local MCP config with:
+
+```bash
+export COLAB_MCP_BRIDGE_BASE_URL=https://bridge.example
+export COLAB_MCP_BRIDGE_ADMIN_SECRET=...
+
+npm run setup:bridge
+```
+
+This writes `~/.config/colab-mcp-bridge/config.json` by default with
+`base_url`, `session_id`, `controller_token`, and
+`enable_dangerous_tools`. It does not persist the runner token and never prints
+admin, controller, or runner token values.
+
+To create the Worker session and immediately bootstrap Colab while keeping the
+runner token in process environment only:
+
+```bash
+npm run setup:bridge -- --bootstrap --colab-session colab-mcp-bridge --gpu T4
+```
+
+Check local prerequisites and config shape with:
+
+```bash
+npm run doctor
+```
+
+The doctor checks Node, installed package files, `uvx`, `google-colab-cli`,
+`wrangler`, local MCP config, Worker `/health` when a URL is configured, and
+authenticated bridge status when the local controller token exists. Use
+`npm run doctor -- --skip-network` for local-only checks.
+
 ## Bootstrap A Colab Runtime
 
 The primary bootstrap flow uses PyPI's `google-colab-cli` through `uvx`. The CLI
