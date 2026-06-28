@@ -8,6 +8,7 @@
     "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
     "setup:bridge": "node scripts/setup-bridge.mjs",
     "doctor": "node scripts/doctor.mjs",
+    "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs",
     "test": "npm run build && node --test dist/test/*.test.js test/*.test.mjs"
   },
   "devDependencies": {

@@ -21,6 +21,10 @@ import {
   formatDoctorCheck,
   nodeVersionCheck,
 } from "../scripts/doctor.mjs";
+import {
+  parseSmokeArgs,
+  plannedSmokeTools,
+} from "../scripts/smoke-mcp.mjs";
 
 const session = {
   sessionId: "sess_test",
@@ -305,4 +309,17 @@ test("doctor collection stays offline with injected command and fetch helpers", 
   const formatted = checks.map(formatDoctorCheck).join("\n");
   assert.match(formatted, /PASS local config:/);
   assert.doesNotMatch(formatted, /controller_secret/);
+});
+
+test("MCP smoke planning keeps dangerous tool opt-in", () => {
+  assert.deepEqual(plannedSmokeTools({}), ["colab_status", "colab_gpu_status"]);
+  assert.deepEqual(plannedSmokeTools({ dangerous: true }), [
+    "colab_status",
+    "colab_gpu_status",
+    "colab_run_shell",
+  ]);
+  assert.deepEqual(plannedSmokeTools(parseSmokeArgs(["--dangerous", "--skip-gpu"])), [
+    "colab_status",
+    "colab_run_shell",
+  ]);
 });

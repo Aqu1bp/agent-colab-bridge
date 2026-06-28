@@ -44,6 +44,42 @@ The doctor checks Node, installed package files, `uvx`, `google-colab-cli`,
 authenticated bridge status when the local controller token exists. Use
 `npm run doctor -- --skip-network` for local-only checks.
 
+## Deploy And Smoke Test
+
+Deploy the Worker/Durable Object with Wrangler:
+
+```bash
+npx wrangler secret put ADMIN_SECRET
+npx wrangler secret put COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS # enter 1 only if you want shell/job/file-write tools enabled
+npx wrangler deploy
+```
+
+Then create a bridge session and bootstrap Colab:
+
+```bash
+export COLAB_MCP_BRIDGE_BASE_URL=https://<worker-name>.<subdomain>.workers.dev
+export COLAB_MCP_BRIDGE_ADMIN_SECRET=...
+
+npm run setup:bridge -- --enable-dangerous-tools --bootstrap --colab-session colab-mcp-bridge --gpu T4
+```
+
+Run local diagnostics:
+
+```bash
+npm run doctor -- --require-network
+```
+
+Finally, smoke test the real Codex-facing MCP path:
+
+```bash
+npm run smoke:mcp
+npm run smoke:mcp -- --dangerous # also verifies colab_run_shell
+```
+
+The smoke command starts the local stdio MCP server, reads the local config, and
+calls MCP tools against the deployed Worker and connected Colab runner. It does
+not print token values.
+
 ## Bootstrap A Colab Runtime
 
 The primary bootstrap flow uses PyPI's `google-colab-cli` through `uvx`. The CLI
