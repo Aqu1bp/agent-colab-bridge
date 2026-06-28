@@ -1013,7 +1013,7 @@ async def connect_and_run(
     import websockets  # type: ignore
 
     runner_id = instance_id or runner_instance_id()
-    url = f"{bridge_url.rstrip('/')}/v1/sessions/{session_id}/runner/ws"
+    url = runner_websocket_url(bridge_url, session_id)
     headers = {
         "Authorization": f"Bearer {runner_token}",
         "X-Bridge-Timestamp": now_iso(),
@@ -1038,6 +1038,18 @@ async def connect_and_run(
         finally:
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+
+def runner_websocket_url(bridge_url: str, session_id: str) -> str:
+    base = bridge_url.rstrip("/")
+    if base.startswith("https://"):
+        base = f"wss://{base[len('https://'):]}"
+    elif base.startswith("http://"):
+        base = f"ws://{base[len('http://'):]}"
+    elif not base.startswith(("wss://", "ws://")):
+        raise ValueError("COLAB_BRIDGE_URL must start with https://, http://, wss://, or ws://")
+
+    return f"{base}/v1/sessions/{session_id}/runner/ws"
 
 
 async def send_heartbeats(websocket: Any, session_id: str, runner_id: str) -> None:
