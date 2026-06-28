@@ -90,6 +90,16 @@ Colab runtime and anything mounted inside it:
 npm run setup:all -- --enable-dangerous-tools --smoke
 ```
 
+Check Colab accelerator candidates before choosing a runtime:
+
+```bash
+npm run runtime:options
+```
+
+This reads the supported CPU/GPU/TPU candidates from the installed
+`google-colab-cli`. It is not a live capacity or account-quota check; Colab
+confirms real availability only when it creates or recreates the runtime.
+
 To change the Colab accelerator after setup, recreate the runtime. This stops
 the named Colab session, creates a fresh bridge session, bootstraps the runner
 with the requested accelerator, and writes new local MCP config:
@@ -310,6 +320,12 @@ Changing GPU type is not a live runner setting. Use:
 
 ```bash
 npm run runtime:recreate -- --gpu T4 --yes --smoke
+```
+
+To see supported accelerator candidates reported by the installed Colab CLI:
+
+```bash
+npm run runtime:options
 ```
 
 The recreate command wraps the safe provisioning sequence: `google-colab-cli

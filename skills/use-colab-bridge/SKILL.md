@@ -57,6 +57,16 @@ checkout, use:
 npm run runtime:recreate -- --gpu L4 --yes --smoke
 ```
 
+To inspect supported accelerator candidates first, use:
+
+```bash
+npm run runtime:options
+```
+
+Treat that output as supported candidates from the installed Colab CLI, not a
+live capacity or account-quota guarantee. Real availability is confirmed only
+when Colab creates or recreates the runtime.
+
 Use `--gpu none` for CPU. This stops the named Colab session unless
 `--skip-stop` is passed, creates a fresh bridge session, bootstraps the runner,
 and rewrites the local MCP config. Confirm with the user before running it,
