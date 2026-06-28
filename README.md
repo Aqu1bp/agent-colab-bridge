@@ -80,6 +80,16 @@ The smoke command starts the local stdio MCP server, reads the local config, and
 calls MCP tools against the deployed Worker and connected Colab runner. It does
 not print token values.
 
+If a Worker deploy disconnects a runner that was started by this repo's
+bootstrap script, reconnect it without creating a new bridge session:
+
+```bash
+uvx --from google-colab-cli colab exec -s colab-mcp-bridge -f scripts/colab-reconnect-runner.py
+```
+
+The reconnect helper reads the bridge environment from the existing Colab runner
+process, restarts the runner, and prints only redacted token status.
+
 ## Bootstrap A Colab Runtime
 
 The primary bootstrap flow uses PyPI's `google-colab-cli` through `uvx`. The CLI
