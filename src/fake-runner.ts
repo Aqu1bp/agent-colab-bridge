@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { constants, mkdtempSync, type Stats } from "node:fs";
 import {
   link,
@@ -13,22 +13,35 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import {
   bridgeError,
   createResultEnvelope,
   MAX_FILE_CONTENT_BYTES,
+  newId,
   normalizeForegroundRunPayload,
+  normalizeInterruptJobPayload,
   normalizeReadFilePayload,
+  normalizeStartJobPayload,
+  normalizeTailJobPayload,
   normalizeWriteFilePayload,
   type BridgeError,
   type CommandEnvelope,
   type ForegroundRunResultPayload,
   type GpuStatusPayload,
+  type InterruptJobPayload,
+  type InterruptJobResultPayload,
+  type JobLogEvent,
+  type JobStatus,
   type ReadFilePayload,
   type ReadFileResultPayload,
   type ResultEnvelope,
   type RunPythonPayload,
   type RunShellPayload,
+  type StartJobPayload,
+  type StartJobResultPayload,
+  type TailJobPayload,
+  type TailJobResultPayload,
   type WriteFilePayload,
   type WriteFileResultPayload,
 } from "./protocol.js";
@@ -47,6 +60,8 @@ export class FakeRunner {
   readonly kernelStartedAt: string;
   readonly runnerStartedAt: string;
   readonly projectRoot: string;
+  private readonly jobs = new Map<string, FakeBackgroundJob>();
+  private activeJobId: string | null = null;
 
   constructor(
     private readonly broker: SessionBroker,
@@ -140,6 +155,60 @@ export class FakeRunner {
       }
     }
 
+    if (envelope.type === "start_job") {
+      try {
+        const result = await this.startBackgroundJob(normalizeStartJobPayload(envelope.payload));
+        return createResultEnvelope({
+          command: envelope,
+          ok: true,
+          payload: result,
+        });
+      } catch (error) {
+        return createResultEnvelope({
+          command: envelope,
+          ok: false,
+          payload: backgroundJobErrorPayload(error),
+          error: toBridgeError(error, "Background job start failed."),
+        });
+      }
+    }
+
+    if (envelope.type === "tail_job") {
+      try {
+        const result = this.tailBackgroundJob(normalizeTailJobPayload(envelope.payload));
+        return createResultEnvelope({
+          command: envelope,
+          ok: true,
+          payload: result,
+        });
+      } catch (error) {
+        return createResultEnvelope({
+          command: envelope,
+          ok: false,
+          payload: backgroundJobErrorPayload(error),
+          error: toBridgeError(error, "Background job tail failed."),
+        });
+      }
+    }
+
+    if (envelope.type === "interrupt_job") {
+      try {
+        const result = await this.interruptBackgroundJob(normalizeInterruptJobPayload(envelope.payload));
+        return createResultEnvelope({
+          command: envelope,
+          ok: true,
+          payload: result,
+        });
+      } catch (error) {
+        return createResultEnvelope({
+          command: envelope,
+          ok: false,
+          payload: backgroundJobErrorPayload(error),
+          error: toBridgeError(error, "Background job interrupt failed."),
+        });
+      }
+    }
+
     return createResultEnvelope({
       command: envelope,
       ok: true,
@@ -149,8 +218,61 @@ export class FakeRunner {
         runner_instance_id: this.runnerInstanceId,
         kernel_started_at: this.kernelStartedAt,
         runner_started_at: this.runnerStartedAt,
+        active_job_id: this.runningJob()?.id ?? null,
       },
     });
+  }
+
+  private async startBackgroundJob(payload: StartJobPayload): Promise<StartJobResultPayload> {
+    const runningJob = this.runningJob();
+    if (runningJob) {
+      throw backgroundJobError("JOB_ALREADY_RUNNING", "A background job is already running.", {
+        job_id: runningJob.id,
+      });
+    }
+
+    await mkdir(this.projectRoot, { recursive: true });
+    const job = FakeBackgroundJob.start(payload, this.projectRoot);
+    this.jobs.set(job.id, job);
+    this.activeJobId = job.id;
+    job.done.finally(() => {
+      if (this.activeJobId === job.id) {
+        this.activeJobId = null;
+      }
+    });
+    return {
+      job_id: job.id,
+      status: "running",
+      started_at: job.startedAt,
+    };
+  }
+
+  private tailBackgroundJob(payload: TailJobPayload): TailJobResultPayload {
+    const job = this.jobs.get(payload.job_id);
+    if (!job) {
+      throw backgroundJobError("JOB_NOT_FOUND", "Background job was not found.", {
+        job_id: payload.job_id,
+      });
+    }
+    return job.tail(payload.cursor, payload.max_bytes);
+  }
+
+  private async interruptBackgroundJob(payload: InterruptJobPayload): Promise<InterruptJobResultPayload> {
+    const job = this.jobs.get(payload.job_id);
+    if (!job) {
+      throw backgroundJobError("JOB_NOT_FOUND", "Background job was not found.", {
+        job_id: payload.job_id,
+      });
+    }
+    return job.interrupt(payload);
+  }
+
+  private runningJob(): FakeBackgroundJob | null {
+    if (!this.activeJobId) {
+      return null;
+    }
+    const job = this.jobs.get(this.activeJobId);
+    return job?.status === "running" ? job : null;
   }
 }
 
@@ -250,6 +372,331 @@ function runBoundedProcess(input: {
       });
     });
   });
+}
+
+class FakeBackgroundJob {
+  readonly id: string;
+  readonly startedAt: string;
+  status: JobStatus = "running";
+  exitCode: number | null = null;
+  interruptedAt: string | null = null;
+  readonly done: Promise<void>;
+  private readonly logRing: JobLogRing;
+
+  private constructor(
+    private readonly child: ChildProcess,
+    payload: StartJobPayload,
+  ) {
+    this.id = newId("job");
+    this.startedAt = currentIso();
+    this.logRing = new JobLogRing(payload.max_log_bytes);
+    this.done = this.watchChild();
+    this.watchStream("stdout");
+    this.watchStream("stderr");
+  }
+
+  static start(payload: StartJobPayload, projectRoot: string): FakeBackgroundJob {
+    const child = spawn(payload.command, [], {
+      cwd: projectRoot,
+      shell: true,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return new FakeBackgroundJob(child, payload);
+  }
+
+  tail(cursor: number, maxBytes: number): TailJobResultPayload {
+    const result = this.logRing.tail(cursor, maxBytes);
+    if (result.expired) {
+      throw backgroundJobError("CURSOR_EXPIRED", "Background job log cursor has expired.", {
+        job_id: this.id,
+        oldest_cursor: result.oldestCursor,
+      });
+    }
+
+    return {
+      job_id: this.id,
+      status: this.status,
+      next_cursor: result.nextCursor,
+      events: result.events,
+      truncated: result.truncated,
+      exit_code: this.exitCode,
+    };
+  }
+
+  async interrupt(payload: InterruptJobPayload): Promise<InterruptJobResultPayload> {
+    const interruptedAt = this.interruptedAt ?? currentIso();
+    this.interruptedAt = interruptedAt;
+
+    if (this.status === "running") {
+      this.sendSignal(payload.signal);
+      let escalation: NodeJS.Timeout | undefined;
+      if (payload.signal === "SIGTERM") {
+        escalation = setTimeout(() => {
+          if (this.status === "running") {
+            this.sendSignal("SIGKILL");
+          }
+        }, payload.kill_after_sec * 1000);
+      }
+
+      try {
+        const fallbackMs = payload.signal === "SIGTERM"
+          ? (payload.kill_after_sec + 1) * 1000
+          : 5_000;
+        await Promise.race([this.done, sleep(fallbackMs)]);
+      } finally {
+        if (escalation) {
+          clearTimeout(escalation);
+        }
+      }
+    }
+
+    return {
+      job_id: this.id,
+      status: this.status,
+      exit_code: this.exitCode,
+      interrupted_at: interruptedAt,
+    };
+  }
+
+  private watchChild(): Promise<void> {
+    return new Promise((resolve) => {
+      this.child.on("error", (error) => {
+        this.logRing.add("stderr", `${error.message}\n`);
+      });
+      this.child.on("close", (code) => {
+        this.exitCode = code;
+        this.status = this.interruptedAt ? "interrupted" : "exited";
+        resolve();
+      });
+    });
+  }
+
+  private watchStream(streamName: "stdout" | "stderr"): void {
+    const stream = streamName === "stdout" ? this.child.stdout : this.child.stderr;
+    if (!stream) {
+      return;
+    }
+
+    const decoder = new StringDecoder("utf8");
+    stream.on("data", (chunk: Buffer) => {
+      const text = decoder.write(chunk);
+      if (text) {
+        this.logRing.add(streamName, text);
+      }
+    });
+    stream.on("end", () => {
+      const text = decoder.end();
+      if (text) {
+        this.logRing.add(streamName, text);
+      }
+    });
+  }
+
+  private sendSignal(signalName: InterruptJobPayload["signal"]): void {
+    if (!this.child.pid) {
+      return;
+    }
+
+    if (process.platform !== "win32") {
+      try {
+        process.kill(-this.child.pid, signalName);
+        return;
+      } catch (error) {
+        if (!isNodeError(error) || (error.code !== "ESRCH" && error.code !== "EPERM")) {
+          throw error;
+        }
+      }
+    }
+
+    try {
+      this.child.kill(signalName);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
+}
+
+interface TailRingOk {
+  expired: false;
+  nextCursor: number;
+  events: JobLogEvent[];
+  truncated: boolean;
+}
+
+interface TailRingExpired {
+  expired: true;
+  oldestCursor: number;
+}
+
+class JobLogRing {
+  private readonly events: Array<JobLogEvent & { bytes: number }> = [];
+  private nextCursor = 1;
+  private totalBytes = 0;
+
+  constructor(private readonly maxBytes: number) {}
+
+  add(stream: JobLogEvent["stream"], text: string): void {
+    for (const chunk of splitUtf8TextByBytes(text, this.maxEventBytes())) {
+      this.addEvent(stream, chunk);
+    }
+  }
+
+  tail(cursor: number, maxBytes: number): TailRingOk | TailRingExpired {
+    const oldestCursor = this.events[0]?.cursor;
+    if (oldestCursor !== undefined && cursor < oldestCursor - 1) {
+      return { expired: true, oldestCursor };
+    }
+
+    const available = this.events.filter((event) => event.cursor > cursor);
+    const events: JobLogEvent[] = [];
+    let bytes = 0;
+    let truncated = false;
+    for (const event of available) {
+      const nextBytes = bytes + event.bytes;
+      if (events.length > 0 && nextBytes > maxBytes) {
+        truncated = true;
+        break;
+      }
+
+      events.push(stripEventBytes(event));
+      bytes = nextBytes;
+      if (nextBytes > maxBytes) {
+        truncated = available.length > events.length || true;
+        break;
+      }
+    }
+
+    return {
+      expired: false,
+      nextCursor: events.at(-1)?.cursor ?? Math.max(cursor, this.nextCursor - 1),
+      events,
+      truncated,
+    };
+  }
+
+  private addEvent(stream: JobLogEvent["stream"], text: string): void {
+    const bytes = Buffer.byteLength(text, "utf8");
+    this.events.push({
+      cursor: this.nextCursor++,
+      stream,
+      text,
+      at: currentIso(),
+      bytes,
+    });
+    this.totalBytes += bytes;
+    this.compact();
+  }
+
+  private compact(): void {
+    let droppedBytes = 0;
+    while (this.totalBytes > this.maxBytes && this.events.length > 1) {
+      const removed = this.events.shift();
+      if (!removed) {
+        break;
+      }
+      this.totalBytes -= removed.bytes;
+      if (removed.stream !== "log_dropped") {
+        droppedBytes += removed.bytes;
+      }
+    }
+
+    if (droppedBytes > 0) {
+      this.addLogDroppedEvent(droppedBytes);
+    }
+  }
+
+  private addLogDroppedEvent(droppedBytes: number): void {
+    const text = `Dropped ${droppedBytes} bytes from background job log ring.`;
+    const bytes = Buffer.byteLength(text, "utf8");
+    this.events.push({
+      cursor: this.nextCursor++,
+      stream: "log_dropped",
+      text,
+      at: currentIso(),
+      bytes,
+    });
+    this.totalBytes += bytes;
+
+    while (this.totalBytes > this.maxBytes && this.events.length > 1) {
+      const removed = this.events.shift();
+      if (!removed) {
+        break;
+      }
+      this.totalBytes -= removed.bytes;
+    }
+  }
+
+  private maxEventBytes(): number {
+    return Math.max(64, Math.min(16 * 1024, Math.floor(this.maxBytes / 4)));
+  }
+}
+
+class BackgroundJobError extends Error {
+  constructor(
+    readonly bridgeError: BridgeError,
+    readonly payload: Record<string, unknown> = {},
+  ) {
+    super(bridgeError.message);
+  }
+}
+
+function backgroundJobError(
+  code: BridgeError["code"],
+  message: string,
+  payload: Record<string, unknown> = {},
+): BackgroundJobError {
+  return new BackgroundJobError(bridgeError(code, message, false), payload);
+}
+
+function backgroundJobErrorPayload(error: unknown): Record<string, unknown> {
+  if (error instanceof BackgroundJobError) {
+    return error.payload;
+  }
+  return {};
+}
+
+function splitUtf8TextByBytes(text: string, maxBytes: number): string[] {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+  let currentBytes = 0;
+  for (const char of text) {
+    const charBytes = Buffer.byteLength(char, "utf8");
+    if (current && currentBytes + charBytes > maxBytes) {
+      chunks.push(current);
+      current = "";
+      currentBytes = 0;
+    }
+    current += char;
+    currentBytes += charBytes;
+  }
+  if (current) {
+    chunks.push(current);
+  }
+  return chunks;
+}
+
+function stripEventBytes(event: JobLogEvent & { bytes: number }): JobLogEvent {
+  return {
+    cursor: event.cursor,
+    stream: event.stream,
+    text: event.text,
+    at: event.at,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function currentIso(): string {
+  return new Date().toISOString();
 }
 
 async function runFakeWriteFile(
@@ -467,6 +914,9 @@ function fileCommandError(code: BridgeError["code"], message: string): FileComma
 }
 
 function toBridgeError(error: unknown, fallbackMessage: string): BridgeError {
+  if (error instanceof BackgroundJobError) {
+    return error.bridgeError;
+  }
   if (error instanceof FileCommandError) {
     return error.bridgeError;
   }

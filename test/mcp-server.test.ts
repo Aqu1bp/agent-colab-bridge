@@ -133,6 +133,9 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   const runShell = result.tools.find((tool) => tool.name === "colab_run_shell");
   const writeTool = result.tools.find((tool) => tool.name === "colab_write_file");
   const readTool = result.tools.find((tool) => tool.name === "colab_read_file");
+  const startJob = result.tools.find((tool) => tool.name === "colab_start_job");
+  const tailJob = result.tools.find((tool) => tool.name === "colab_tail_job");
+  const interruptJob = result.tools.find((tool) => tool.name === "colab_interrupt_job");
 
   assert.ok(runShell);
   assert.equal(typeof runShell.description, "string");
@@ -176,6 +179,54 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
     openWorldHint: true,
   });
   assert.equal("enabledByDefault" in readTool, false);
+
+  assert.ok(startJob);
+  const startJobSchema = startJob.inputSchema as {
+    required: string[];
+    properties: Record<string, { default?: number; maximum?: number }>;
+  };
+  assert.deepEqual(startJobSchema.required, ["command"]);
+  assert.equal(startJobSchema.properties.max_log_bytes?.default, 200 * 1024);
+  assert.equal(startJobSchema.properties.max_log_bytes?.maximum, 200 * 1024);
+  assert.deepEqual(startJob.annotations, {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in startJob, false);
+
+  assert.ok(tailJob);
+  const tailJobSchema = tailJob.inputSchema as {
+    required: string[];
+    properties: Record<string, { default?: number; maximum?: number }>;
+  };
+  assert.deepEqual(tailJobSchema.required, ["job_id"]);
+  assert.equal(tailJobSchema.properties.max_bytes?.default, 20 * 1024);
+  assert.equal(tailJobSchema.properties.max_bytes?.maximum, 200 * 1024);
+  assert.deepEqual(tailJob.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in tailJob, false);
+
+  assert.ok(interruptJob);
+  const interruptSchema = interruptJob.inputSchema as {
+    required: string[];
+    properties: Record<string, { default?: number; maximum?: number }>;
+  };
+  assert.deepEqual(interruptSchema.required, ["job_id"]);
+  assert.equal(interruptSchema.properties.kill_after_sec?.default, 5);
+  assert.equal(interruptSchema.properties.kill_after_sec?.maximum, 30);
+  assert.deepEqual(interruptJob.annotations, {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in interruptJob, false);
 });
 
 test("colab_status calls the local HTTP handler and returns MCP CallToolResult shape", async () => {
@@ -297,6 +348,24 @@ test("disabled dangerous tool returns TOOL_DISABLED MCP error result", async () 
 
   assert.equal(writeResult.isError, true);
   assert.equal(writeResult.structuredContent.error?.code, "TOOL_DISABLED");
+
+  const startResponse = await send(transport, "tools/call", {
+    name: "colab_start_job",
+    arguments: { command: "echo no" },
+  });
+  const startResult = callToolResult(startResponse);
+
+  assert.equal(startResult.isError, true);
+  assert.equal(startResult.structuredContent.error?.code, "TOOL_DISABLED");
+
+  const interruptResponse = await send(transport, "tools/call", {
+    name: "colab_interrupt_job",
+    arguments: { job_id: "job_missing" },
+  });
+  const interruptResult = callToolResult(interruptResponse);
+
+  assert.equal(interruptResult.isError, true);
+  assert.equal(interruptResult.structuredContent.error?.code, "TOOL_DISABLED");
 });
 
 test("enabled dangerous MCP tools execute through the HTTP command path", async () => {
@@ -358,6 +427,21 @@ test("enabled dangerous MCP tools execute through the HTTP command path", async 
     mode: "overwrite",
   });
   assert.equal(await readFile(join(runner.projectRoot, "mcp.txt"), "utf8"), "mcp-file");
+
+  const start = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_start_job",
+      arguments: { command: "printf mcp-job" },
+    }),
+  );
+  const startData = start.structuredContent.data as {
+    type: string;
+    result_payload: { job_id: string; status: string; started_at: string };
+  };
+  assert.equal(start.isError, false);
+  assert.equal(startData.type, "start_job");
+  assert.equal(startData.result_payload.status, "running");
+  assert.equal(startData.result_payload.job_id.startsWith("job_"), true);
 });
 
 test("MCP dangerous tool stays disabled when HTTP is enabled but local config is not", async () => {
@@ -416,6 +500,46 @@ test("colab_read_file works through MCP without dangerous enablement", async () 
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }
+});
+
+test("colab_tail_job works through MCP without dangerous enablement", async () => {
+  const { broker, handler } = createHarness({ enableDangerousTools: true });
+  const session = await createSession(handler);
+  attachFakeRunnerForTest({ broker, sessionId: session.session_id, runnerToken: session.runner_token });
+  const setupTransport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      config: serverConfig(session, { enableDangerousTools: true }),
+      httpHandler: handler,
+    }),
+  );
+
+  const start = callToolResult(
+    await send(setupTransport, "tools/call", {
+      name: "colab_start_job",
+      arguments: { command: "printf tail-mcp" },
+    }),
+  );
+  const startData = start.structuredContent.data as {
+    result_payload: { job_id: string };
+  };
+
+  const tailTransport = new InMemoryMcpTransport(
+    new ColabMcpServer({ config: serverConfig(session), httpHandler: handler }),
+  );
+  const tail = callToolResult(
+    await send(tailTransport, "tools/call", {
+      name: "colab_tail_job",
+      arguments: { job_id: startData.result_payload.job_id },
+    }),
+  );
+  const tailData = tail.structuredContent.data as {
+    type: string;
+    result_payload: { job_id: string; events: unknown[] };
+  };
+
+  assert.equal(tail.isError, false);
+  assert.equal(tailData.type, "tail_job");
+  assert.equal(tailData.result_payload.job_id, startData.result_payload.job_id);
 });
 
 test("tools/call accepts MCP _meta object as argument carrier", async () => {

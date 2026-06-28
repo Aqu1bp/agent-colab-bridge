@@ -48,4 +48,11 @@ test("tool metadata declares annotations and output schemas", () => {
   assert.equal(toolByName("colab_read_file")?.enabledByDefault, true);
   assert.equal(toolByName("colab_read_file")?.annotations.readOnlyHint, true);
   assert.equal(toolByName("colab_read_file")?.annotations.idempotentHint, true);
+  assert.equal(toolByName("colab_start_job")?.enabledByDefault, false);
+  assert.equal(toolByName("colab_start_job")?.annotations.destructiveHint, true);
+  assert.equal(toolByName("colab_tail_job")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_tail_job")?.annotations.readOnlyHint, true);
+  assert.equal(toolByName("colab_tail_job")?.annotations.idempotentHint, true);
+  assert.equal(toolByName("colab_interrupt_job")?.enabledByDefault, false);
+  assert.equal(toolByName("colab_interrupt_job")?.annotations.destructiveHint, true);
 });

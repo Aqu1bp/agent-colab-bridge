@@ -4,12 +4,18 @@ import { pathToFileURL } from "node:url";
 import {
   bridgeError,
   normalizeForegroundRunPayload,
+  normalizeInterruptJobPayload,
   normalizeReadFilePayload,
+  normalizeStartJobPayload,
+  normalizeTailJobPayload,
   normalizeWriteFilePayload,
   type BridgeError,
+  type InterruptJobPayload,
   type ReadFilePayload,
   type RunPythonPayload,
   type RunShellPayload,
+  type StartJobPayload,
+  type TailJobPayload,
   type WriteFilePayload,
 } from "./protocol.js";
 import { type BridgeHttpHandler } from "./http.js";
@@ -249,6 +255,56 @@ export class ColabMcpServer {
         }
 
         return callToolSuccess("File command completed.", command);
+      }
+
+      if (
+        tool.name === "colab_start_job" ||
+        tool.name === "colab_tail_job" ||
+        tool.name === "colab_interrupt_job"
+      ) {
+        let payload: StartJobPayload | TailJobPayload | InterruptJobPayload;
+        try {
+          if (tool.name === "colab_start_job") {
+            payload = normalizeStartJobPayload(params.arguments);
+          } else if (tool.name === "colab_tail_job") {
+            payload = normalizeTailJobPayload(params.arguments);
+          } else {
+            payload = normalizeInterruptJobPayload(params.arguments);
+          }
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const response = await this.clientRequest((client) => {
+          if (tool.name === "colab_start_job") {
+            return client.createStartJobCommand(payload as StartJobPayload);
+          }
+          if (tool.name === "colab_tail_job") {
+            return client.createTailJobCommand(payload as TailJobPayload);
+          }
+          return client.createInterruptJobCommand(payload as InterruptJobPayload);
+        });
+        if (!response.ok) {
+          return callToolError(
+            response.error ?? bridgeError("INTERNAL_ERROR", "Bridge background job command failed.", false),
+          );
+        }
+
+        const command = response.data;
+        if (command?.error) {
+          return callToolError(command.error);
+        }
+
+        const text =
+          tool.name === "colab_start_job"
+            ? "Background job started."
+            : tool.name === "colab_tail_job"
+              ? "Background job tail returned."
+              : "Background job interrupt completed.";
+        return callToolSuccess(text, command);
       }
 
       return disabledToolResult(params.name);

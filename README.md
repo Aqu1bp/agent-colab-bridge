@@ -45,9 +45,10 @@ node dist/src/mcp-server.js
 config file with `base_url` or `worker_url`, `session_id`, and
 `controller_token`.
 
-Dangerous foreground execution and file writes are disabled unless explicitly
-enabled in local policy. To allow the short `colab_run_shell`,
-`colab_run_python`, and `colab_write_file` tools implemented so far, set one of:
+Dangerous foreground execution, file writes, and background job control are
+disabled unless explicitly enabled in local policy. To allow
+`colab_run_shell`, `colab_run_python`, `colab_write_file`, `colab_start_job`,
+and `colab_interrupt_job`, set one of:
 
 ```bash
 COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS=1
@@ -57,8 +58,9 @@ or add `"enable_dangerous_tools": true` / `"enableDangerousTools": true` to the
 local config file. The Worker/HTTP handler must also be started with the same
 explicit enablement, for example with `COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS=1`
 in the Worker environment. Without this, `run_shell`, `run_python`, and
-`write_file` return `TOOL_DISABLED`. `read_file` is read-only and enabled by
-default, but the runner still enforces project-root path and size limits.
+`write_file`, `start_job`, and `interrupt_job` return `TOOL_DISABLED`.
+`read_file` and `tail_job` are read-only and enabled by default, but the runner
+still enforces project-root path and size/log limits.
 
 ## Implemented In This Slice
 
@@ -96,6 +98,19 @@ default, but the runner still enforces project-root path and size limits.
 - Runner-side file path safety for file tools: relative paths only, lexical
   traversal rejection, no symlink parents, no symlink targets, regular-file
   checks, same-directory temp writes for `overwrite`, and create-new protection.
+- `colab_start_job`, disabled by default and gated by the same explicit local
+  dangerous-tool enablement. It starts one background shell job in the runner
+  project root, in a new process group, and returns immediately with a `job_id`.
+- `colab_tail_job`, enabled by default as a read-only, open-world, idempotent
+  MCP tool. It returns bounded merged stdout/stderr log events by cursor with a
+  20 KiB default tail limit and a 200 KiB hard cap.
+- `colab_interrupt_job`, disabled by default and gated by explicit local
+  dangerous-tool enablement. It signals the job process group and escalates from
+  `SIGTERM` to `SIGKILL` after `kill_after_sec`.
+- Runner-side background job state for the fake runner and Python Colab runner:
+  one active job, bounded 200 KiB log ring, cursor expiry, `log_dropped` events,
+  completed-job tailing while runner process state remains, and process-group
+  interrupt handling.
 - Local MCP config parsing/loading and authenticated HTTP client calls with a
   fresh timestamp and nonce per bridge request.
 - A Cloudflare Worker-shaped entry module with an env-scoped in-memory fallback
@@ -104,20 +119,22 @@ default, but the runner still enforces project-root path and size limits.
 - Secret-free Wrangler configuration for the Worker and Durable Object binding.
 - A Python Colab runner at `python/colab_runner.py` documenting the outbound
   runner connection shape and implementing the fixed GPU probe, bounded
-  foreground shell/Python commands, and safe file read/write commands under
-  `/content/project`.
+  foreground shell/Python commands, safe file read/write commands, and
+  background job start/tail/interrupt commands under `/content/project`.
 
 ## Intentionally Not Implemented Yet
 
 - Real deployed Cloudflare integration tests, full WebSocket handling in Node
   tests, and full SQLite table-backed Durable Object storage.
-- Background jobs.
+- Durable Object-backed job/log persistence across Worker hibernation or Colab
+  runner process restart. Current job/log state is owned by the connected
+  runner process.
 - Deployed Cloudflare wiring for the MCP server. The server is local and
   testable, and currently targets the existing HTTP handler/client path.
 
-The runner does not expose background jobs. Shell and Python foreground
-execution are remote code execution in the Colab VM, and file writes are
-destructive file access; all remain disabled by default in metadata and local
-policy. They execute only after explicit local enablement on both the MCP and
-HTTP/Worker sides. File path restrictions on `read_file` and `write_file` do
-not limit what enabled shell or Python commands can do.
+Shell/Python foreground execution and background job starts are remote code
+execution in the Colab VM, interrupts terminate process groups, and file writes
+are destructive file access; all remain disabled by default in metadata and
+local policy. They execute only after explicit local enablement on both the MCP
+and HTTP/Worker sides. File path restrictions on `read_file` and `write_file`
+do not limit what enabled shell, Python, or background job commands can do.

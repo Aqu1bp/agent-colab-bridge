@@ -48,7 +48,10 @@ export type CommandType =
   | "run_shell"
   | "run_python"
   | "write_file"
-  | "read_file";
+  | "read_file"
+  | "start_job"
+  | "tail_job"
+  | "interrupt_job";
 
 export const DEFAULT_FOREGROUND_TIMEOUT_SEC = 30;
 export const MAX_FOREGROUND_TIMEOUT_SEC = 120;
@@ -57,6 +60,12 @@ export const MAX_OUTPUT_BYTES = 20 * 1024;
 export const DEFAULT_READ_FILE_MAX_BYTES = 20 * 1024;
 export const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
 export const MAX_READ_FILE_BYTES = 1024 * 1024;
+export const DEFAULT_JOB_LOG_BYTES = 200 * 1024;
+export const MAX_JOB_LOG_BYTES = 200 * 1024;
+export const DEFAULT_TAIL_MAX_BYTES = 20 * 1024;
+export const MAX_TAIL_BYTES = 200 * 1024;
+export const DEFAULT_INTERRUPT_KILL_AFTER_SEC = 5;
+export const MAX_INTERRUPT_KILL_AFTER_SEC = 30;
 
 export interface BridgeError {
   code: ErrorCode;
@@ -144,6 +153,26 @@ export interface ReadFilePayload {
   max_bytes: number;
 }
 
+export interface StartJobPayload {
+  command: string;
+  name?: string;
+  max_log_bytes: number;
+}
+
+export interface TailJobPayload {
+  job_id: string;
+  cursor: number;
+  max_bytes: number;
+}
+
+export type InterruptJobSignal = "SIGTERM" | "SIGKILL";
+
+export interface InterruptJobPayload {
+  job_id: string;
+  signal: InterruptJobSignal;
+  kill_after_sec: number;
+}
+
 export interface ForegroundRunResultPayload {
   stdout: string;
   stderr: string;
@@ -164,6 +193,37 @@ export interface ReadFileResultPayload {
   content: string;
   bytes_read: number;
   truncated: boolean;
+}
+
+export type JobStatus = "running" | "exited" | "interrupted";
+
+export interface JobLogEvent {
+  cursor: number;
+  stream: "stdout" | "stderr" | "log_dropped";
+  text: string;
+  at: string;
+}
+
+export interface StartJobResultPayload {
+  job_id: string;
+  status: "running";
+  started_at: string;
+}
+
+export interface TailJobResultPayload {
+  job_id: string;
+  status: JobStatus;
+  next_cursor: number;
+  events: JobLogEvent[];
+  truncated: boolean;
+  exit_code: number | null;
+}
+
+export interface InterruptJobResultPayload {
+  job_id: string;
+  status: JobStatus;
+  exit_code: number | null;
+  interrupted_at: string;
 }
 
 export function bridgeError(
@@ -265,7 +325,10 @@ export function assertCommandType(value: string): asserts value is CommandType {
     value !== "run_shell" &&
     value !== "run_python" &&
     value !== "write_file" &&
-    value !== "read_file"
+    value !== "read_file" &&
+    value !== "start_job" &&
+    value !== "tail_job" &&
+    value !== "interrupt_job"
   ) {
     throw bridgeError("INVALID_ARGUMENT", `Unsupported command type: ${value}`);
   }
@@ -273,8 +336,14 @@ export function assertCommandType(value: string): asserts value is CommandType {
 
 export function isDangerousCommandType(
   value: string,
-): value is "run_shell" | "run_python" | "write_file" {
-  return value === "run_shell" || value === "run_python" || value === "write_file";
+): value is "run_shell" | "run_python" | "write_file" | "start_job" | "interrupt_job" {
+  return (
+    value === "run_shell" ||
+    value === "run_python" ||
+    value === "write_file" ||
+    value === "start_job" ||
+    value === "interrupt_job"
+  );
 }
 
 export function normalizeForegroundRunPayload(
@@ -368,6 +437,72 @@ export function normalizeReadFilePayload(payload: unknown): ReadFilePayload {
   return { path, max_bytes: maxBytes };
 }
 
+export function normalizeStartJobPayload(payload: unknown): StartJobPayload {
+  const record = normalizeObjectPayload(payload, "start_job payload");
+  const command = record.command;
+  if (typeof command !== "string" || command.length === 0) {
+    throw bridgeError("INVALID_ARGUMENT", "command must be a non-empty string.");
+  }
+
+  const name = record.name;
+  if (name !== undefined && typeof name !== "string") {
+    throw bridgeError("INVALID_ARGUMENT", "name must be a string.");
+  }
+
+  const maxLogBytes = normalizePositiveInteger(
+    record.max_log_bytes,
+    "max_log_bytes",
+    DEFAULT_JOB_LOG_BYTES,
+    MAX_JOB_LOG_BYTES,
+  );
+
+  return {
+    command,
+    ...(name !== undefined ? { name } : {}),
+    max_log_bytes: maxLogBytes,
+  };
+}
+
+export function normalizeTailJobPayload(payload: unknown): TailJobPayload {
+  const record = normalizeObjectPayload(payload, "tail_job payload");
+  const jobId = record.job_id;
+  if (typeof jobId !== "string" || jobId.length === 0) {
+    throw bridgeError("INVALID_ARGUMENT", "job_id must be a non-empty string.");
+  }
+
+  const cursor = normalizeNonNegativeInteger(record.cursor, "cursor", 0);
+  const maxBytes = normalizePositiveInteger(
+    record.max_bytes,
+    "max_bytes",
+    DEFAULT_TAIL_MAX_BYTES,
+    MAX_TAIL_BYTES,
+  );
+
+  return { job_id: jobId, cursor, max_bytes: maxBytes };
+}
+
+export function normalizeInterruptJobPayload(payload: unknown): InterruptJobPayload {
+  const record = normalizeObjectPayload(payload, "interrupt_job payload");
+  const jobId = record.job_id;
+  if (typeof jobId !== "string" || jobId.length === 0) {
+    throw bridgeError("INVALID_ARGUMENT", "job_id must be a non-empty string.");
+  }
+
+  const signal = record.signal ?? "SIGTERM";
+  if (signal !== "SIGTERM" && signal !== "SIGKILL") {
+    throw bridgeError("INVALID_ARGUMENT", "signal must be SIGTERM or SIGKILL.");
+  }
+
+  const killAfterSec = normalizeNonNegativeNumber(
+    record.kill_after_sec,
+    "kill_after_sec",
+    DEFAULT_INTERRUPT_KILL_AFTER_SEC,
+    MAX_INTERRUPT_KILL_AFTER_SEC,
+  );
+
+  return { job_id: jobId, signal, kill_after_sec: killAfterSec };
+}
+
 function normalizeObjectPayload(payload: unknown, name: string): Record<string, unknown> {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw bridgeError("INVALID_ARGUMENT", `${name} must be an object.`);
@@ -393,6 +528,23 @@ function normalizePositiveNumber(
   return value;
 }
 
+function normalizeNonNegativeNumber(
+  value: unknown,
+  name: string,
+  defaultValue: number,
+  maxValue: number,
+): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > maxValue) {
+    throw bridgeError("INVALID_ARGUMENT", `${name} must be a non-negative number no greater than ${maxValue}.`);
+  }
+
+  return value;
+}
+
 function normalizePositiveInteger(
   value: unknown,
   name: string,
@@ -411,6 +563,27 @@ function normalizePositiveInteger(
     value > maxValue
   ) {
     throw bridgeError("INVALID_ARGUMENT", `${name} must be a positive integer no greater than ${maxValue}.`);
+  }
+
+  return value;
+}
+
+function normalizeNonNegativeInteger(
+  value: unknown,
+  name: string,
+  defaultValue: number,
+): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    !Number.isFinite(value) ||
+    value < 0
+  ) {
+    throw bridgeError("INVALID_ARGUMENT", `${name} must be a non-negative integer.`);
   }
 
   return value;

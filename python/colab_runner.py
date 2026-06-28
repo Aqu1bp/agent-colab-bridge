@@ -7,13 +7,14 @@ This runner connects outbound from Colab to:
 Authentication is header-based. Do not put runner tokens in query strings or
 logs. Shell and Python foreground commands are intentionally dangerous and are
 expected to be gated by local controller policy before they reach the runner.
-File writes are also expected to be gated before they reach the runner.
-Background job commands are still intentionally not implemented in this slice.
+File writes and background job start/interrupt are also expected to be gated
+before they reach the runner.
 """
 
 from __future__ import annotations
 
 import asyncio
+import codecs
 import errno
 import json
 import ntpath
@@ -39,6 +40,12 @@ MAX_OUTPUT_BYTES = 20 * 1024
 DEFAULT_READ_FILE_MAX_BYTES = 20 * 1024
 MAX_FILE_CONTENT_BYTES = 1024 * 1024
 MAX_READ_FILE_BYTES = 1024 * 1024
+DEFAULT_JOB_LOG_BYTES = 200 * 1024
+MAX_JOB_LOG_BYTES = 200 * 1024
+DEFAULT_TAIL_MAX_BYTES = 20 * 1024
+MAX_TAIL_BYTES = 200 * 1024
+DEFAULT_INTERRUPT_KILL_AFTER_SEC = 5
+MAX_INTERRUPT_KILL_AFTER_SEC = 30
 
 
 @dataclass(frozen=True)
@@ -83,14 +90,245 @@ class ReadFileResult:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class StartJobResult:
+    job_id: str
+    status: str
+    started_at: str
+
+
+@dataclass(frozen=True)
+class JobLogEvent:
+    cursor: int
+    stream: str
+    text: str
+    at: str
+
+
+@dataclass(frozen=True)
+class TailJobResult:
+    job_id: str
+    status: str
+    next_cursor: int
+    events: list[JobLogEvent]
+    truncated: bool
+    exit_code: int | None
+
+
+@dataclass(frozen=True)
+class InterruptJobResult:
+    job_id: str
+    status: str
+    exit_code: int | None
+    interrupted_at: str
+
+
 class RunnerCommandError(Exception):
-    def __init__(self, code: str, message: str, retryable: bool = False):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        retryable: bool = False,
+        payload: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.bridge_error = {
             "code": code,
             "message": message,
             "retryable": retryable,
         }
+        self.payload = payload or {}
+
+
+class JobLogRing:
+    def __init__(self, max_bytes: int):
+        self.max_bytes = max_bytes
+        self.events: list[dict[str, Any]] = []
+        self.next_cursor = 1
+        self.total_bytes = 0
+
+    def add(self, stream: str, text: str) -> None:
+        for chunk in split_utf8_text_by_bytes(text, self.max_event_bytes()):
+            self._add_event(stream, chunk)
+
+    def tail(self, cursor: int, max_bytes: int) -> tuple[int, list[JobLogEvent], bool]:
+        oldest_cursor = self.events[0]["cursor"] if self.events else None
+        if oldest_cursor is not None and cursor < oldest_cursor - 1:
+            raise RunnerCommandError(
+                "CURSOR_EXPIRED",
+                "Background job log cursor has expired.",
+                payload={"oldest_cursor": oldest_cursor},
+            )
+
+        events: list[JobLogEvent] = []
+        total = 0
+        truncated = False
+        for event in [item for item in self.events if item["cursor"] > cursor]:
+            next_total = total + event["bytes"]
+            if events and next_total > max_bytes:
+                truncated = True
+                break
+            events.append(
+                JobLogEvent(
+                    cursor=event["cursor"],
+                    stream=event["stream"],
+                    text=event["text"],
+                    at=event["at"],
+                )
+            )
+            total = next_total
+            if next_total > max_bytes:
+                truncated = True
+                break
+
+        next_cursor = events[-1].cursor if events else max(cursor, self.next_cursor - 1)
+        return next_cursor, events, truncated
+
+    def _add_event(self, stream: str, text: str) -> None:
+        byte_count = len(text.encode("utf-8"))
+        self.events.append(
+            {
+                "cursor": self.next_cursor,
+                "stream": stream,
+                "text": text,
+                "at": now_iso(),
+                "bytes": byte_count,
+            }
+        )
+        self.next_cursor += 1
+        self.total_bytes += byte_count
+        self._compact()
+
+    def _compact(self) -> None:
+        dropped_bytes = 0
+        while self.total_bytes > self.max_bytes and len(self.events) > 1:
+            removed = self.events.pop(0)
+            self.total_bytes -= removed["bytes"]
+            if removed["stream"] != "log_dropped":
+                dropped_bytes += removed["bytes"]
+
+        if dropped_bytes:
+            self._add_log_dropped_event(dropped_bytes)
+
+    def _add_log_dropped_event(self, dropped_bytes: int) -> None:
+        text = f"Dropped {dropped_bytes} bytes from background job log ring."
+        byte_count = len(text.encode("utf-8"))
+        self.events.append(
+            {
+                "cursor": self.next_cursor,
+                "stream": "log_dropped",
+                "text": text,
+                "at": now_iso(),
+                "bytes": byte_count,
+            }
+        )
+        self.next_cursor += 1
+        self.total_bytes += byte_count
+        while self.total_bytes > self.max_bytes and len(self.events) > 1:
+            removed = self.events.pop(0)
+            self.total_bytes -= removed["bytes"]
+
+    def max_event_bytes(self) -> int:
+        return max(64, min(16 * 1024, self.max_bytes // 4))
+
+
+def split_utf8_text_by_bytes(text: str, max_bytes: int) -> list[str]:
+    if len(text.encode("utf-8")) <= max_bytes:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+    current_bytes = 0
+    for char in text:
+        char_bytes = len(char.encode("utf-8"))
+        if current and current_bytes + char_bytes > max_bytes:
+            chunks.append(current)
+            current = ""
+            current_bytes = 0
+        current += char
+        current_bytes += char_bytes
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+class BackgroundJob:
+    def __init__(self, job_id: str, process: asyncio.subprocess.Process, max_log_bytes: int):
+        self.job_id = job_id
+        self.process = process
+        self.started_at = now_iso()
+        self.status = "running"
+        self.exit_code: int | None = None
+        self.interrupted_at: str | None = None
+        self.log_ring = JobLogRing(max_log_bytes)
+        self.stdout_task = asyncio.create_task(self._read_stream("stdout", process.stdout))
+        self.stderr_task = asyncio.create_task(self._read_stream("stderr", process.stderr))
+        self.done_task = asyncio.create_task(self._watch_process())
+
+    async def _read_stream(self, stream: str, reader: asyncio.StreamReader | None) -> None:
+        if reader is None:
+            return
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        while True:
+            chunk = await reader.read(4096)
+            if not chunk:
+                remaining = decoder.decode(b"", final=True)
+                if remaining:
+                    self.log_ring.add(stream, remaining)
+                return
+            text = decoder.decode(chunk)
+            if text:
+                self.log_ring.add(stream, text)
+
+    async def _watch_process(self) -> None:
+        await self.process.wait()
+        await asyncio.gather(self.stdout_task, self.stderr_task, return_exceptions=True)
+        self.exit_code = self.process.returncode
+        self.status = "interrupted" if self.interrupted_at else "exited"
+        global ACTIVE_JOB_ID
+        if ACTIVE_JOB_ID == self.job_id:
+            ACTIVE_JOB_ID = None
+
+    def tail(self, cursor: int, max_bytes: int) -> TailJobResult:
+        try:
+            next_cursor, events, truncated = self.log_ring.tail(cursor, max_bytes)
+        except RunnerCommandError as error:
+            error.payload = {"job_id": self.job_id, **error.payload}
+            raise
+        return TailJobResult(
+            job_id=self.job_id,
+            status=self.status,
+            next_cursor=next_cursor,
+            events=events,
+            truncated=truncated,
+            exit_code=self.exit_code,
+        )
+
+    async def interrupt(self, payload: dict[str, Any]) -> InterruptJobResult:
+        interrupted_at = self.interrupted_at or now_iso()
+        if self.status == "running":
+            self.interrupted_at = interrupted_at
+            send_process_group_signal(self.process, getattr(signal, payload["signal"]))
+            if payload["signal"] == "SIGTERM":
+                try:
+                    await asyncio.wait_for(asyncio.shield(self.done_task), timeout=payload["kill_after_sec"])
+                except asyncio.TimeoutError:
+                    send_process_group_signal(self.process, signal.SIGKILL)
+            try:
+                await asyncio.wait_for(asyncio.shield(self.done_task), timeout=5)
+            except asyncio.TimeoutError:
+                pass
+
+        return InterruptJobResult(
+            job_id=self.job_id,
+            status=self.status,
+            exit_code=self.exit_code,
+            interrupted_at=interrupted_at,
+        )
+
+
+JOBS: dict[str, BackgroundJob] = {}
+ACTIVE_JOB_ID: str | None = None
 
 
 def runner_instance_id() -> str:
@@ -222,11 +460,41 @@ async def handle_command(envelope: dict[str, Any]) -> dict[str, Any]:
             return command_error_result(envelope, RunnerCommandError("INTERNAL_ERROR", "File command failed."))
         return result_envelope(envelope, ok=True, payload=asdict(result))
 
+    if command_type == "start_job":
+        try:
+            payload = normalize_start_job_payload(envelope.get("payload", {}))
+            result = await start_job(payload)
+        except ValueError as error:
+            return invalid_argument_result(envelope, str(error))
+        except RunnerCommandError as error:
+            return command_error_result(envelope, error)
+        return result_envelope(envelope, ok=True, payload=asdict(result))
+
+    if command_type == "tail_job":
+        try:
+            payload = normalize_tail_job_payload(envelope.get("payload", {}))
+            result = tail_job(payload)
+        except ValueError as error:
+            return invalid_argument_result(envelope, str(error))
+        except RunnerCommandError as error:
+            return command_error_result(envelope, error)
+        return result_envelope(envelope, ok=True, payload=asdict(result))
+
+    if command_type == "interrupt_job":
+        try:
+            payload = normalize_interrupt_job_payload(envelope.get("payload", {}))
+            result = await interrupt_job(payload)
+        except ValueError as error:
+            return invalid_argument_result(envelope, str(error))
+        except RunnerCommandError as error:
+            return command_error_result(envelope, error)
+        return result_envelope(envelope, ok=True, payload=asdict(result))
+
     return invalid_argument_result(envelope, "Unsupported runner command in this build slice.")
 
 
 def command_error_result(envelope: dict[str, Any], error: RunnerCommandError) -> dict[str, Any]:
-    return result_envelope(envelope, ok=False, payload={}, error=error.bridge_error)
+    return result_envelope(envelope, ok=False, payload=error.payload, error=error.bridge_error)
 
 
 def invalid_argument_result(envelope: dict[str, Any], message: str) -> dict[str, Any]:
@@ -320,6 +588,87 @@ def normalize_read_file_payload(payload: Any) -> dict[str, Any]:
     return {"path": path, "max_bytes": max_bytes}
 
 
+def normalize_start_job_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("start_job payload must be an object.")
+
+    command = payload.get("command")
+    if not isinstance(command, str) or command == "":
+        raise ValueError("command must be a non-empty string.")
+
+    name = payload.get("name")
+    if name is not None and not isinstance(name, str):
+        raise ValueError("name must be a string.")
+
+    max_log_bytes = payload.get("max_log_bytes", DEFAULT_JOB_LOG_BYTES)
+    if (
+        not isinstance(max_log_bytes, int)
+        or isinstance(max_log_bytes, bool)
+        or max_log_bytes <= 0
+        or max_log_bytes > MAX_JOB_LOG_BYTES
+    ):
+        raise ValueError(f"max_log_bytes must be a positive integer no greater than {MAX_JOB_LOG_BYTES}.")
+
+    normalized = {"command": command, "max_log_bytes": max_log_bytes}
+    if name is not None:
+        normalized["name"] = name
+    return normalized
+
+
+def normalize_tail_job_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("tail_job payload must be an object.")
+
+    job_id = payload.get("job_id")
+    if not isinstance(job_id, str) or job_id == "":
+        raise ValueError("job_id must be a non-empty string.")
+
+    cursor = payload.get("cursor", 0)
+    if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
+        raise ValueError("cursor must be a non-negative integer.")
+
+    max_bytes = payload.get("max_bytes", DEFAULT_TAIL_MAX_BYTES)
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)
+        or max_bytes <= 0
+        or max_bytes > MAX_TAIL_BYTES
+    ):
+        raise ValueError(f"max_bytes must be a positive integer no greater than {MAX_TAIL_BYTES}.")
+
+    return {"job_id": job_id, "cursor": cursor, "max_bytes": max_bytes}
+
+
+def normalize_interrupt_job_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("interrupt_job payload must be an object.")
+
+    job_id = payload.get("job_id")
+    if not isinstance(job_id, str) or job_id == "":
+        raise ValueError("job_id must be a non-empty string.")
+
+    interrupt_signal = payload.get("signal", "SIGTERM")
+    if interrupt_signal not in {"SIGTERM", "SIGKILL"}:
+        raise ValueError("signal must be SIGTERM or SIGKILL.")
+
+    kill_after_sec = payload.get("kill_after_sec", DEFAULT_INTERRUPT_KILL_AFTER_SEC)
+    if (
+        not isinstance(kill_after_sec, (int, float))
+        or isinstance(kill_after_sec, bool)
+        or kill_after_sec < 0
+        or kill_after_sec > MAX_INTERRUPT_KILL_AFTER_SEC
+    ):
+        raise ValueError(
+            f"kill_after_sec must be a non-negative number no greater than {MAX_INTERRUPT_KILL_AFTER_SEC}."
+        )
+
+    return {
+        "job_id": job_id,
+        "signal": interrupt_signal,
+        "kill_after_sec": float(kill_after_sec),
+    }
+
+
 async def run_shell(payload: dict[str, Any]) -> ForegroundResult:
     ensure_project_root()
     process = await asyncio.create_subprocess_shell(
@@ -355,6 +704,54 @@ async def run_python(payload: dict[str, Any]) -> ForegroundResult:
             os.unlink(temp_path)
         except FileNotFoundError:
             pass
+
+
+async def start_job(payload: dict[str, Any]) -> StartJobResult:
+    ensure_project_root()
+    global ACTIVE_JOB_ID
+    if ACTIVE_JOB_ID is not None:
+        active_job = JOBS.get(ACTIVE_JOB_ID)
+        if active_job is not None and active_job.status == "running":
+            raise RunnerCommandError(
+                "JOB_ALREADY_RUNNING",
+                "A background job is already running.",
+                payload={"job_id": active_job.job_id},
+            )
+
+    process = await asyncio.create_subprocess_shell(
+        payload["command"],
+        cwd=PROJECT_ROOT,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    job_id = f"job_{uuid.uuid4().hex}"
+    job = BackgroundJob(job_id, process, payload["max_log_bytes"])
+    JOBS[job_id] = job
+    ACTIVE_JOB_ID = job_id
+    return StartJobResult(job_id=job_id, status="running", started_at=job.started_at)
+
+
+def tail_job(payload: dict[str, Any]) -> TailJobResult:
+    job = JOBS.get(payload["job_id"])
+    if job is None:
+        raise RunnerCommandError(
+            "JOB_NOT_FOUND",
+            "Background job was not found.",
+            payload={"job_id": payload["job_id"]},
+        )
+    return job.tail(payload["cursor"], payload["max_bytes"])
+
+
+async def interrupt_job(payload: dict[str, Any]) -> InterruptJobResult:
+    job = JOBS.get(payload["job_id"])
+    if job is None:
+        raise RunnerCommandError(
+            "JOB_NOT_FOUND",
+            "Background job was not found.",
+            payload={"job_id": payload["job_id"]},
+        )
+    return await job.interrupt(payload)
 
 
 def write_file(payload: dict[str, Any]) -> WriteFileResult:
@@ -558,14 +955,21 @@ async def collect_process(
 
 
 def kill_process_group(process: asyncio.subprocess.Process) -> None:
+    send_process_group_signal(process, signal.SIGKILL)
+
+
+def send_process_group_signal(process: asyncio.subprocess.Process, target_signal: int) -> None:
     if process.pid is None:
         return
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process.pid, target_signal)
     except ProcessLookupError:
         return
     except PermissionError:
-        process.kill()
+        try:
+            os.kill(process.pid, target_signal)
+        except ProcessLookupError:
+            return
 
 
 def result_envelope(

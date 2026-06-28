@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import {
   bridgeError,
   type BridgeError,
+  type InterruptJobPayload,
   type ReadFilePayload,
   type RunPythonPayload,
   type RunShellPayload,
+  type StartJobPayload,
+  type TailJobPayload,
   type WriteFilePayload,
 } from "./protocol.js";
 import { type BridgeHttpHandler } from "./http.js";
@@ -96,6 +99,30 @@ export class BridgeHttpClient {
       "POST",
       `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
       { type: "read_file", payload },
+    );
+  }
+
+  async createStartJobCommand(payload: StartJobPayload): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.request<BridgeCommandData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
+      { type: "start_job", payload },
+    );
+  }
+
+  async createTailJobCommand(payload: TailJobPayload): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.request<BridgeCommandData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
+      { type: "tail_job", payload },
+    );
+  }
+
+  async createInterruptJobCommand(payload: InterruptJobPayload): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.request<BridgeCommandData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
+      { type: "interrupt_job", payload },
     );
   }
 

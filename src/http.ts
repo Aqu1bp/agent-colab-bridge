@@ -3,16 +3,23 @@ import { BrokerError, SessionBroker, type CreateSessionResult } from "./broker.j
 import { FakeRunner, type FakeRunnerOptions } from "./fake-runner.js";
 import {
   bridgeError,
+  assertCommandType,
   isDangerousCommandType,
   normalizeForegroundRunPayload,
+  normalizeInterruptJobPayload,
   normalizeReadFilePayload,
+  normalizeStartJobPayload,
+  normalizeTailJobPayload,
   normalizeWriteFilePayload,
   type BridgeError,
+  type InterruptJobPayload,
   type ReadFilePayload,
   type RunPythonPayload,
   type RunShellPayload,
   type CommandRow,
   type CommandType,
+  type StartJobPayload,
+  type TailJobPayload,
   type WriteFilePayload,
 } from "./protocol.js";
 import { RunnerConnection, type RunnerTransport } from "./runner-connection.js";
@@ -361,15 +368,9 @@ function parseCommandInput(
     );
   }
 
-  if (
-    type !== "status" &&
-    type !== "ping" &&
-    type !== "gpu_status" &&
-    type !== "run_shell" &&
-    type !== "run_python" &&
-    type !== "write_file" &&
-    type !== "read_file"
-  ) {
+  try {
+    assertCommandType(type);
+  } catch {
     throw new HttpRouteError(
       400,
       bridgeError("INVALID_ARGUMENT", "Unsupported command type.", false),
@@ -433,6 +434,45 @@ function parseCommandInput(
       throw error;
     }
     normalizedPayload = filePayload;
+  }
+
+  if (type === "start_job") {
+    let jobPayload: StartJobPayload;
+    try {
+      jobPayload = normalizeStartJobPayload(payload ?? {});
+    } catch (error) {
+      if (isBridgeErrorLike(error)) {
+        throw new HttpRouteError(400, error);
+      }
+      throw error;
+    }
+    normalizedPayload = jobPayload;
+  }
+
+  if (type === "tail_job") {
+    let jobPayload: TailJobPayload;
+    try {
+      jobPayload = normalizeTailJobPayload(payload ?? {});
+    } catch (error) {
+      if (isBridgeErrorLike(error)) {
+        throw new HttpRouteError(400, error);
+      }
+      throw error;
+    }
+    normalizedPayload = jobPayload;
+  }
+
+  if (type === "interrupt_job") {
+    let jobPayload: InterruptJobPayload;
+    try {
+      jobPayload = normalizeInterruptJobPayload(payload ?? {});
+    } catch (error) {
+      if (isBridgeErrorLike(error)) {
+        throw new HttpRouteError(400, error);
+      }
+      throw error;
+    }
+    normalizedPayload = jobPayload;
   }
 
   return {

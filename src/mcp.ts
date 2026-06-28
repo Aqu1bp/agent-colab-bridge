@@ -1,7 +1,11 @@
 import {
+  DEFAULT_JOB_LOG_BYTES,
   DEFAULT_READ_FILE_MAX_BYTES,
+  DEFAULT_TAIL_MAX_BYTES,
   MAX_FILE_CONTENT_BYTES,
+  MAX_JOB_LOG_BYTES,
   MAX_READ_FILE_BYTES,
+  MAX_TAIL_BYTES,
   bridgeError,
   type BridgeError,
   type ErrorCode,
@@ -174,14 +178,18 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "colab_start_job",
-    description: "Disabled background job placeholder.",
+    description: "Start one background shell job in the connected Colab runner when explicitly enabled.",
     inputSchema: {
       type: "object",
       required: ["command"],
       properties: {
         command: { type: "string" },
         name: { type: "string" },
-        max_log_bytes: { type: "number" },
+        max_log_bytes: {
+          type: "integer",
+          default: DEFAULT_JOB_LOG_BYTES,
+          maximum: MAX_JOB_LOG_BYTES,
+        },
       },
       additionalProperties: false,
     },
@@ -190,15 +198,40 @@ export const toolDefinitions: ToolDefinition[] = [
     enabledByDefault: false,
   },
   {
+    name: "colab_tail_job",
+    description: "Read bounded background job log events from the connected Colab runner.",
+    inputSchema: {
+      type: "object",
+      required: ["job_id"],
+      properties: {
+        job_id: { type: "string" },
+        cursor: { type: "integer", default: 0, minimum: 0 },
+        max_bytes: {
+          type: "integer",
+          default: DEFAULT_TAIL_MAX_BYTES,
+          maximum: MAX_TAIL_BYTES,
+        },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+  {
     name: "colab_interrupt_job",
-    description: "Disabled background job interrupt placeholder.",
+    description: "Interrupt a background job process group in the connected Colab runner when explicitly enabled.",
     inputSchema: {
       type: "object",
       required: ["job_id"],
       properties: {
         job_id: { type: "string" },
         signal: { enum: ["SIGTERM", "SIGKILL"] },
-        kill_after_sec: { type: "number" },
+        kill_after_sec: {
+          type: "number",
+          default: 5,
+          maximum: 30,
+        },
       },
       additionalProperties: false,
     },
@@ -213,7 +246,13 @@ export function toolByName(name: string): ToolDefinition | undefined {
 }
 
 export function isEnabledDangerousExecutionTool(name: string): boolean {
-  return name === "colab_run_shell" || name === "colab_run_python" || name === "colab_write_file";
+  return (
+    name === "colab_run_shell" ||
+    name === "colab_run_python" ||
+    name === "colab_write_file" ||
+    name === "colab_start_job" ||
+    name === "colab_interrupt_job"
+  );
 }
 
 export function callToolSuccess<TData>(text: string, data: TData): CallToolResult<TData> {

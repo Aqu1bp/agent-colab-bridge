@@ -3,11 +3,16 @@ import assert from "node:assert/strict";
 import {
   PROTOCOL_VERSION,
   MAX_FILE_CONTENT_BYTES,
+  MAX_JOB_LOG_BYTES,
   MAX_READ_FILE_BYTES,
+  MAX_TAIL_BYTES,
   createCommandEnvelope,
   createResultEnvelope,
   normalizeForegroundRunPayload,
+  normalizeInterruptJobPayload,
   normalizeReadFilePayload,
+  normalizeStartJobPayload,
+  normalizeTailJobPayload,
   normalizeWriteFilePayload,
   payloadHash,
 } from "../src/protocol.js";
@@ -106,6 +111,40 @@ test("protocol helpers support write_file and read_file command envelopes", () =
   assert.equal(createResultEnvelope({ command: read, ok: true, payload: {} }).type, "read_file_result");
 });
 
+test("protocol helpers support background job command envelopes", () => {
+  const start = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_start_job",
+    type: "start_job",
+    payload: { command: "python train.py", max_log_bytes: 1024 },
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+  const tail = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_tail_job",
+    type: "tail_job",
+    payload: { job_id: "job_1", cursor: 0, max_bytes: 1024 },
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+  const interrupt = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_interrupt_job",
+    type: "interrupt_job",
+    payload: { job_id: "job_1", signal: "SIGTERM", kill_after_sec: 5 },
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+
+  assert.equal(createResultEnvelope({ command: start, ok: true, payload: {} }).type, "start_job_result");
+  assert.equal(createResultEnvelope({ command: tail, ok: true, payload: {} }).type, "tail_job_result");
+  assert.equal(
+    createResultEnvelope({ command: interrupt, ok: true, payload: {} }).type,
+    "interrupt_job_result",
+  );
+});
+
 test("foreground command payload validation applies defaults and caps", () => {
   assert.deepEqual(normalizeForegroundRunPayload("run_shell", { command: "pwd" }), {
     command: "pwd",
@@ -164,6 +203,54 @@ test("file command payload validation applies defaults and caps", () => {
       path: "notes.txt",
       content: "hello",
       mode: "invalid",
+    }),
+  );
+});
+
+test("background job payload validation applies defaults and caps", () => {
+  assert.deepEqual(normalizeStartJobPayload({ command: "python train.py" }), {
+    command: "python train.py",
+    max_log_bytes: 200 * 1024,
+  });
+  assert.deepEqual(normalizeTailJobPayload({ job_id: "job_1" }), {
+    job_id: "job_1",
+    cursor: 0,
+    max_bytes: 20 * 1024,
+  });
+  assert.deepEqual(normalizeInterruptJobPayload({ job_id: "job_1" }), {
+    job_id: "job_1",
+    signal: "SIGTERM",
+    kill_after_sec: 5,
+  });
+
+  assert.throws(() =>
+    normalizeStartJobPayload({
+      command: "python train.py",
+      max_log_bytes: MAX_JOB_LOG_BYTES + 1,
+    }),
+  );
+  assert.throws(() =>
+    normalizeTailJobPayload({
+      job_id: "job_1",
+      max_bytes: MAX_TAIL_BYTES + 1,
+    }),
+  );
+  assert.throws(() =>
+    normalizeTailJobPayload({
+      job_id: "job_1",
+      cursor: -1,
+    }),
+  );
+  assert.throws(() =>
+    normalizeInterruptJobPayload({
+      job_id: "job_1",
+      signal: "SIGINT",
+    }),
+  );
+  assert.throws(() =>
+    normalizeInterruptJobPayload({
+      job_id: "job_1",
+      kill_after_sec: 31,
     }),
   );
 });

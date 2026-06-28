@@ -252,6 +252,36 @@ test("dangerous command types are rejected by default through HTTP", async () =>
 
   assert.equal(writeResponse.status, 403);
   assert.equal(writeEnvelope.error?.code, "TOOL_DISABLED");
+
+  const startResponse = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "dangerous_start_default"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "start_job", payload: { command: "echo no" } }),
+    }),
+  );
+  const startEnvelope = await readEnvelope(startResponse);
+
+  assert.equal(startResponse.status, 403);
+  assert.equal(startEnvelope.error?.code, "TOOL_DISABLED");
+
+  const interruptResponse = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "dangerous_interrupt_default"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "interrupt_job", payload: { job_id: "job_missing" } }),
+    }),
+  );
+  const interruptEnvelope = await readEnvelope(interruptResponse);
+
+  assert.equal(interruptResponse.status, 403);
+  assert.equal(interruptEnvelope.error?.code, "TOOL_DISABLED");
 });
 
 test("dangerous command types are accepted through HTTP when explicitly enabled", async () => {
@@ -324,6 +354,27 @@ test("dangerous command types are accepted through HTTP when explicitly enabled"
     mode: "overwrite",
   });
   assert.equal(await readFile(join(runner.projectRoot, "http.txt"), "utf8"), "http-file");
+
+  const start = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "dangerous_start_enabled"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "start_job", payload: { command: "printf http-job" } }),
+    }),
+  );
+  const startEnvelope = await readEnvelope<CommandData>(start);
+  const startResult = startEnvelope.data?.result_payload as {
+    job_id: string;
+    status: string;
+    started_at: string;
+  };
+  assert.equal(start.status, 201);
+  assert.equal(startEnvelope.data?.type, "start_job");
+  assert.equal(startResult.status, "running");
+  assert.equal(startResult.job_id.startsWith("job_"), true);
 });
 
 test("command result can be polled after original command response", async () => {
@@ -399,6 +450,7 @@ test("status command type is accepted through command route", async () => {
     runner_instance_id: "runner_status_command",
     kernel_started_at: "2026-06-28T10:00:00.000Z",
     runner_started_at: "2026-06-28T10:00:01.000Z",
+    active_job_id: null,
   });
 });
 
@@ -484,6 +536,46 @@ test("read_file command type is accepted through HTTP without dangerous enableme
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }
+});
+
+test("tail_job command type is accepted through HTTP without dangerous enablement", async () => {
+  const { broker, handler } = createHarness({ enableDangerousTools: true });
+  const session = await createSession(handler);
+  attachFakeRunnerForTest({
+    broker,
+    sessionId: session.session_id,
+    runnerToken: session.runner_token,
+  });
+
+  const start = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "tail_setup_start"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "start_job", payload: { command: "printf http-tail" } }),
+    }),
+  );
+  const startEnvelope = await readEnvelope<CommandData>(start);
+  const startResult = startEnvelope.data?.result_payload as { job_id: string };
+
+  const readOnlyHandler = createBridgeHttpHandler({ broker, adminSecret });
+  const tail = await readOnlyHandler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "tail_default"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ type: "tail_job", payload: { job_id: startResult.job_id } }),
+    }),
+  );
+  const tailEnvelope = await readEnvelope<CommandData>(tail);
+
+  assert.equal(tail.status, 201);
+  assert.equal(tailEnvelope.data?.type, "tail_job");
+  assert.equal(tailEnvelope.data?.state, "succeeded");
 });
 
 test("unknown command result returns 404", async () => {
