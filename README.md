@@ -19,15 +19,30 @@ use `google-colab-cli` for bootstrap.
 Prerequisites:
 
 - Node.js 20 or newer
-- A Cloudflare account with Wrangler access
-- `uvx` for running `google-colab-cli`
+- A Cloudflare account authenticated with Wrangler
+- `uvx` for running `google-colab-cli` on macOS or Linux
 - A Colab account/session that you control
+- The Codex CLI/app for plugin installation
 
-Install and test the repo:
+After cloning the repo, install and test it:
 
 ```bash
+cd codex-colab-bridge
 npm install
 npm test
+```
+
+Authenticate Cloudflare before setup:
+
+```bash
+npx wrangler login
+```
+
+`google-colab-cli` has no separate `login` command. The first Colab operation may
+open a browser OAuth flow. You can do a quick CLI sanity check with:
+
+```bash
+uvx --from google-colab-cli colab sessions
 ```
 
 Preview the deploy/bootstrap plan. The dry run prints no secrets and does not
@@ -37,29 +52,40 @@ touch Cloudflare or Colab:
 npm run setup:all -- --dry-run
 ```
 
-Run the guided setup. Omit `--enable-dangerous-tools` if you only want status,
-GPU, read-file, and tail-job tools.
+Run the guided setup in the safer default mode:
 
 ```bash
-npm run setup:all -- --enable-dangerous-tools --smoke
+npm run setup:all -- --smoke
 ```
 
 `setup:all` checks local prerequisites, writes Cloudflare Worker secrets, deploys
 the Worker, creates a bridge session, writes
 `~/.config/codex-colab-bridge/config.json`, bootstraps a Colab T4 session named
-`codex-colab-bridge`, and optionally runs the MCP smoke test. It generates an
-admin secret when one is not provided and never prints admin, controller, or
-runner token values.
+`codex-colab-bridge`, and runs the MCP smoke test when `--smoke` is set. It
+generates an admin secret when one is not provided and never prints admin,
+controller, or runner token values.
+
+By default, setup writes the Worker dangerous-tools policy as disabled. This
+allows status, GPU status, read-file, and tail-job tools, but blocks remote
+shell, Python execution, file writes, job starts, and job interrupts.
 
 For a stable admin secret across repeated setup commands, set it in the
 environment instead of passing it on an npm command line:
 
 ```bash
 export COLAB_MCP_BRIDGE_ADMIN_SECRET=<admin-secret>
+npm run setup:all -- --smoke
+```
+
+Enable remote shell/Python/file-write/job-control tools only when you trust the
+Colab runtime and anything mounted inside it:
+
+```bash
 npm run setup:all -- --enable-dangerous-tools --smoke
 ```
 
-To install this checkout into the Codex app:
+After setup writes the local MCP config, install this checkout into the Codex
+app:
 
 ```bash
 codex plugin marketplace add .
@@ -95,14 +121,6 @@ codex plugin add codex-colab-bridge@codex-colab-bridge
 The plugin contributes the local MCP server and a usage skill. The bridge still
 requires the Cloudflare Worker and Colab runner setup described above; installing
 the plugin does not deploy infrastructure or create tokens.
-
-To smoke a fresh local clone/copy without deploying live infrastructure:
-
-```bash
-tmp=$(mktemp -d)
-rsync -a --exclude .git --exclude node_modules --exclude dist --exclude '.env*' ./ "$tmp/repo/"
-(cd "$tmp/repo" && npm install && npm test && npm run build)
-```
 
 Run diagnostics:
 
@@ -315,7 +333,7 @@ explicit enablement. Without this, dangerous tools return `TOOL_DISABLED`.
 `read_file` and `tail_job` are read-only and enabled by default, but the runner
 still enforces project-root path and size/log limits.
 
-## Worker Slice
+## Cloudflare Worker
 
 The Worker-shaped entrypoint is `src/worker.ts`. It exports the default `fetch`
 handler plus `ColabBridgeSessionDurableObject` for the current HTTP bridge
@@ -332,6 +350,28 @@ contain secrets. Configure deployment secrets outside source control:
 ```bash
 npx wrangler secret put ADMIN_SECRET
 ```
+
+## Maintainer Validation
+
+Smoke a fresh local clone/copy without deploying live infrastructure:
+
+```bash
+tmp=$(mktemp -d)
+rsync -a --exclude .git --exclude node_modules --exclude dist --exclude '.env*' ./ "$tmp/repo/"
+(cd "$tmp/repo" && npm install && npm test && npm run build)
+```
+
+Before tagging a release, clone from the public GitHub URL and run the full live
+setup path:
+
+```bash
+npm install
+npm test
+npm run setup:all -- --smoke
+```
+
+Use `--enable-dangerous-tools --smoke` for release validation only when you want
+the smoke test to verify remote shell execution too.
 
 ## Pre-Release Checklist
 
