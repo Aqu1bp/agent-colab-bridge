@@ -1,4 +1,11 @@
-import { bridgeError, type BridgeError, type ErrorCode } from "./protocol.js";
+import {
+  DEFAULT_READ_FILE_MAX_BYTES,
+  MAX_FILE_CONTENT_BYTES,
+  MAX_READ_FILE_BYTES,
+  bridgeError,
+  type BridgeError,
+  type ErrorCode,
+} from "./protocol.js";
 
 export interface ToolAnnotations {
   readOnlyHint: boolean;
@@ -130,13 +137,13 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "colab_write_file",
-    description: "Disabled file write placeholder.",
+    description: "Write a small UTF-8 text file under the Colab project root when explicitly enabled.",
     inputSchema: {
       type: "object",
       required: ["path", "content", "mode"],
       properties: {
         path: { type: "string" },
-        content: { type: "string" },
+        content: { type: "string", maxLength: MAX_FILE_CONTENT_BYTES },
         mode: { enum: ["overwrite", "append", "create_new"] },
       },
       additionalProperties: false,
@@ -144,6 +151,26 @@ export const toolDefinitions: ToolDefinition[] = [
     outputSchema: structuredOutputSchema,
     annotations: dangerousRemoteAnnotations,
     enabledByDefault: false,
+  },
+  {
+    name: "colab_read_file",
+    description: "Read a small UTF-8 text file under the Colab project root.",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        path: { type: "string" },
+        max_bytes: {
+          type: "integer",
+          default: DEFAULT_READ_FILE_MAX_BYTES,
+          maximum: MAX_READ_FILE_BYTES,
+        },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
   },
   {
     name: "colab_start_job",
@@ -186,7 +213,7 @@ export function toolByName(name: string): ToolDefinition | undefined {
 }
 
 export function isEnabledDangerousExecutionTool(name: string): boolean {
-  return name === "colab_run_shell" || name === "colab_run_python";
+  return name === "colab_run_shell" || name === "colab_run_python" || name === "colab_write_file";
 }
 
 export function callToolSuccess<TData>(text: string, data: TData): CallToolResult<TData> {
@@ -218,6 +245,6 @@ export function disabledToolResult(
   code: ErrorCode = "TOOL_DISABLED",
 ): CallToolResult<never> {
   return callToolError(
-    bridgeError(code, `${toolName} is disabled by local policy in this build slice.`, false),
+    bridgeError(code, `${toolName} is disabled by local policy.`, false),
   );
 }

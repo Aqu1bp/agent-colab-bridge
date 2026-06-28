@@ -4,9 +4,13 @@ import { pathToFileURL } from "node:url";
 import {
   bridgeError,
   normalizeForegroundRunPayload,
+  normalizeReadFilePayload,
+  normalizeWriteFilePayload,
   type BridgeError,
+  type ReadFilePayload,
   type RunPythonPayload,
   type RunShellPayload,
+  type WriteFilePayload,
 } from "./protocol.js";
 import { type BridgeHttpHandler } from "./http.js";
 import {
@@ -212,6 +216,39 @@ export class ColabMcpServer {
         }
 
         return callToolSuccess("Foreground command completed.", command);
+      }
+
+      if (tool.name === "colab_write_file" || tool.name === "colab_read_file") {
+        let payload: WriteFilePayload | ReadFilePayload;
+        try {
+          payload =
+            tool.name === "colab_write_file"
+              ? normalizeWriteFilePayload(params.arguments)
+              : normalizeReadFilePayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const response = await this.clientRequest((client) =>
+          tool.name === "colab_write_file"
+            ? client.createWriteFileCommand(payload as WriteFilePayload)
+            : client.createReadFileCommand(payload as ReadFilePayload),
+        );
+        if (!response.ok) {
+          return callToolError(
+            response.error ?? bridgeError("INTERNAL_ERROR", "Bridge file command failed.", false),
+          );
+        }
+
+        const command = response.data;
+        if (command?.error) {
+          return callToolError(command.error);
+        }
+
+        return callToolSuccess("File command completed.", command);
       }
 
       return disabledToolResult(params.name);

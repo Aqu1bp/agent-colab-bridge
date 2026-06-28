@@ -45,9 +45,9 @@ node dist/src/mcp-server.js
 config file with `base_url` or `worker_url`, `session_id`, and
 `controller_token`.
 
-Dangerous foreground execution is disabled unless it is explicitly enabled in
-local policy. To allow only the short `colab_run_shell` and `colab_run_python`
-tools implemented in this slice, set one of:
+Dangerous foreground execution and file writes are disabled unless explicitly
+enabled in local policy. To allow the short `colab_run_shell`,
+`colab_run_python`, and `colab_write_file` tools implemented so far, set one of:
 
 ```bash
 COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS=1
@@ -56,8 +56,9 @@ COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS=1
 or add `"enable_dangerous_tools": true` / `"enableDangerousTools": true` to the
 local config file. The Worker/HTTP handler must also be started with the same
 explicit enablement, for example with `COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS=1`
-in the Worker environment. Without this, `run_shell` and `run_python` return
-`TOOL_DISABLED`.
+in the Worker environment. Without this, `run_shell`, `run_python`, and
+`write_file` return `TOOL_DISABLED`. `read_file` is read-only and enabled by
+default, but the runner still enforces project-root path and size limits.
 
 ## Implemented In This Slice
 
@@ -85,6 +86,16 @@ in the Worker environment. Without this, `run_shell` and `run_python` return
   executable when local MCP config/options and HTTP/Worker context explicitly
   enable dangerous tools. These commands enforce a default 30 second timeout,
   a hard 120 second timeout maximum, and a 20 KiB output cap.
+- `colab_write_file`, disabled by default and gated by the same explicit local
+  dangerous-tool enablement on both MCP and HTTP/Worker sides. It writes UTF-8
+  text under the project root with `overwrite`, `append`, or `create_new` mode
+  and a 1 MiB content cap.
+- `colab_read_file`, enabled by default as a read-only, open-world, idempotent
+  MCP tool. It reads UTF-8 text under the project root with a 20 KiB default
+  read limit, a 1 MiB hard cap, and truncation metadata.
+- Runner-side file path safety for file tools: relative paths only, lexical
+  traversal rejection, no symlink parents, no symlink targets, regular-file
+  checks, same-directory temp writes for `overwrite`, and create-new protection.
 - Local MCP config parsing/loading and authenticated HTTP client calls with a
   fresh timestamp and nonce per bridge request.
 - A Cloudflare Worker-shaped entry module with an env-scoped in-memory fallback
@@ -92,18 +103,21 @@ in the Worker environment. Without this, `run_shell` and `run_python` return
   state shape.
 - Secret-free Wrangler configuration for the Worker and Durable Object binding.
 - A Python Colab runner at `python/colab_runner.py` documenting the outbound
-  runner connection shape and implementing the fixed GPU probe plus bounded
-  foreground shell/Python commands under `/content/project`.
+  runner connection shape and implementing the fixed GPU probe, bounded
+  foreground shell/Python commands, and safe file read/write commands under
+  `/content/project`.
 
 ## Intentionally Not Implemented Yet
 
 - Real deployed Cloudflare integration tests, full WebSocket handling in Node
   tests, and full SQLite table-backed Durable Object storage.
-- File tools and background jobs.
+- Background jobs.
 - Deployed Cloudflare wiring for the MCP server. The server is local and
   testable, and currently targets the existing HTTP handler/client path.
 
-The runner does not expose file access or background jobs. Shell and Python
-foreground execution are remote code execution in the Colab VM and remain
-disabled by default in metadata and local policy; they execute only after
-explicit local enablement on both the MCP and HTTP/Worker sides.
+The runner does not expose background jobs. Shell and Python foreground
+execution are remote code execution in the Colab VM, and file writes are
+destructive file access; all remain disabled by default in metadata and local
+policy. They execute only after explicit local enablement on both the MCP and
+HTTP/Worker sides. File path restrictions on `read_file` and `write_file` do
+not limit what enabled shell or Python commands can do.

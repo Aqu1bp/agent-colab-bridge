@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionBroker } from "../src/broker.js";
@@ -131,6 +131,8 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   const response = await send(transport, "tools/list");
   const result = response.result as { tools: Array<Record<string, unknown>> };
   const runShell = result.tools.find((tool) => tool.name === "colab_run_shell");
+  const writeTool = result.tools.find((tool) => tool.name === "colab_write_file");
+  const readTool = result.tools.find((tool) => tool.name === "colab_read_file");
 
   assert.ok(runShell);
   assert.equal(typeof runShell.description, "string");
@@ -143,6 +145,37 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
     openWorldHint: true,
   });
   assert.equal("enabledByDefault" in runShell, false);
+
+  assert.ok(writeTool);
+  const writeSchema = writeTool.inputSchema as {
+    required: string[];
+    properties: Record<string, { enum?: string[]; maximum?: number }>;
+  };
+  assert.deepEqual(writeSchema.required, ["path", "content", "mode"]);
+  assert.deepEqual(writeSchema.properties.mode?.enum, ["overwrite", "append", "create_new"]);
+  assert.deepEqual(writeTool.annotations, {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in writeTool, false);
+
+  assert.ok(readTool);
+  const readSchema = readTool.inputSchema as {
+    required: string[];
+    properties: Record<string, { default?: number; maximum?: number }>;
+  };
+  assert.deepEqual(readSchema.required, ["path"]);
+  assert.equal(readSchema.properties.max_bytes?.default, 20 * 1024);
+  assert.equal(readSchema.properties.max_bytes?.maximum, 1024 * 1024);
+  assert.deepEqual(readTool.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in readTool, false);
 });
 
 test("colab_status calls the local HTTP handler and returns MCP CallToolResult shape", async () => {
@@ -247,20 +280,29 @@ test("duplicate MCP calls generate fresh HTTP nonce values", async () => {
 test("disabled dangerous tool returns TOOL_DISABLED MCP error result", async () => {
   const transport = new InMemoryMcpTransport(new ColabMcpServer());
 
-  const response = await send(transport, "tools/call", {
+  const shellResponse = await send(transport, "tools/call", {
     name: "colab_run_shell",
     arguments: { command: "echo no" },
   });
-  const result = callToolResult(response);
+  const shellResult = callToolResult(shellResponse);
 
-  assert.equal(result.isError, true);
-  assert.equal(result.structuredContent.error?.code, "TOOL_DISABLED");
+  assert.equal(shellResult.isError, true);
+  assert.equal(shellResult.structuredContent.error?.code, "TOOL_DISABLED");
+
+  const writeResponse = await send(transport, "tools/call", {
+    name: "colab_write_file",
+    arguments: { path: "blocked.txt", content: "no", mode: "overwrite" },
+  });
+  const writeResult = callToolResult(writeResponse);
+
+  assert.equal(writeResult.isError, true);
+  assert.equal(writeResult.structuredContent.error?.code, "TOOL_DISABLED");
 });
 
 test("enabled dangerous MCP tools execute through the HTTP command path", async () => {
   const { broker, handler } = createHarness({ enableDangerousTools: true });
   const session = await createSession(handler);
-  attachFakeRunnerForTest({ broker, sessionId: session.session_id, runnerToken: session.runner_token });
+  const runner = attachFakeRunnerForTest({ broker, sessionId: session.session_id, runnerToken: session.runner_token });
   const transport = new InMemoryMcpTransport(
     new ColabMcpServer({
       config: serverConfig(session, { enableDangerousTools: true }),
@@ -297,6 +339,25 @@ test("enabled dangerous MCP tools execute through the HTTP command path", async 
   assert.equal(pythonData.type, "run_python");
   assert.equal(pythonData.result_payload.stdout, "mcp-python\n");
   assert.equal(pythonData.result_payload.exit_code, 0);
+
+  const write = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_write_file",
+      arguments: { path: "mcp.txt", content: "mcp-file", mode: "overwrite" },
+    }),
+  );
+  const writeData = write.structuredContent.data as {
+    type: string;
+    result_payload: { path: string; bytes_written: number; mode: string };
+  };
+  assert.equal(write.isError, false);
+  assert.equal(writeData.type, "write_file");
+  assert.deepEqual(writeData.result_payload, {
+    path: "mcp.txt",
+    bytes_written: 8,
+    mode: "overwrite",
+  });
+  assert.equal(await readFile(join(runner.projectRoot, "mcp.txt"), "utf8"), "mcp-file");
 });
 
 test("MCP dangerous tool stays disabled when HTTP is enabled but local config is not", async () => {
@@ -315,6 +376,46 @@ test("MCP dangerous tool stays disabled when HTTP is enabled but local config is
 
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error?.code, "TOOL_DISABLED");
+});
+
+test("colab_read_file works through MCP without dangerous enablement", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "colab-mcp-read-"));
+  try {
+    await writeFile(join(projectRoot, "logs.txt"), "abcdef", "utf8");
+    const { broker, handler } = createHarness();
+    const session = await createSession(handler);
+    attachFakeRunnerForTest({
+      broker,
+      sessionId: session.session_id,
+      runnerToken: session.runner_token,
+      options: { projectRoot },
+    });
+    const transport = new InMemoryMcpTransport(
+      new ColabMcpServer({ config: serverConfig(session), httpHandler: handler }),
+    );
+
+    const read = callToolResult(
+      await send(transport, "tools/call", {
+        name: "colab_read_file",
+        arguments: { path: "logs.txt", max_bytes: 4 },
+      }),
+    );
+    const data = read.structuredContent.data as {
+      type: string;
+      result_payload: { path: string; content: string; bytes_read: number; truncated: boolean };
+    };
+
+    assert.equal(read.isError, false);
+    assert.equal(data.type, "read_file");
+    assert.deepEqual(data.result_payload, {
+      path: "logs.txt",
+      content: "abcd",
+      bytes_read: 4,
+      truncated: true,
+    });
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
 });
 
 test("tools/call accepts MCP _meta object as argument carrier", async () => {

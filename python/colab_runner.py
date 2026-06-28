@@ -7,15 +7,20 @@ This runner connects outbound from Colab to:
 Authentication is header-based. Do not put runner tokens in query strings or
 logs. Shell and Python foreground commands are intentionally dangerous and are
 expected to be gated by local controller policy before they reach the runner.
-This slice still does not implement file or background job commands.
+File writes are also expected to be gated before they reach the runner.
+Background job commands are still intentionally not implemented in this slice.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import ntpath
 import os
+import posixpath
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,6 +36,9 @@ DEFAULT_FOREGROUND_TIMEOUT_SEC = 30
 MAX_FOREGROUND_TIMEOUT_SEC = 120
 DEFAULT_MAX_OUTPUT_BYTES = 20 * 1024
 MAX_OUTPUT_BYTES = 20 * 1024
+DEFAULT_READ_FILE_MAX_BYTES = 20 * 1024
+MAX_FILE_CONTENT_BYTES = 1024 * 1024
+MAX_READ_FILE_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -58,6 +66,31 @@ class ForegroundResult:
     duration_ms: int
     timed_out: bool
     truncated: bool
+
+
+@dataclass(frozen=True)
+class WriteFileResult:
+    path: str
+    bytes_written: int
+    mode: str
+
+
+@dataclass(frozen=True)
+class ReadFileResult:
+    path: str
+    content: str
+    bytes_read: int
+    truncated: bool
+
+
+class RunnerCommandError(Exception):
+    def __init__(self, code: str, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.bridge_error = {
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+        }
 
 
 def runner_instance_id() -> str:
@@ -165,7 +198,35 @@ async def handle_command(envelope: dict[str, Any]) -> dict[str, Any]:
             return invalid_argument_result(envelope, str(error))
         return result_envelope(envelope, ok=True, payload=asdict(await run_python(payload)))
 
+    if command_type == "write_file":
+        try:
+            payload = normalize_write_file_payload(envelope.get("payload", {}))
+            result = write_file(payload)
+        except ValueError as error:
+            return invalid_argument_result(envelope, str(error))
+        except RunnerCommandError as error:
+            return command_error_result(envelope, error)
+        except OSError:
+            return command_error_result(envelope, RunnerCommandError("INTERNAL_ERROR", "File command failed."))
+        return result_envelope(envelope, ok=True, payload=asdict(result))
+
+    if command_type == "read_file":
+        try:
+            payload = normalize_read_file_payload(envelope.get("payload", {}))
+            result = read_file(payload)
+        except ValueError as error:
+            return invalid_argument_result(envelope, str(error))
+        except RunnerCommandError as error:
+            return command_error_result(envelope, error)
+        except OSError:
+            return command_error_result(envelope, RunnerCommandError("INTERNAL_ERROR", "File command failed."))
+        return result_envelope(envelope, ok=True, payload=asdict(result))
+
     return invalid_argument_result(envelope, "Unsupported runner command in this build slice.")
+
+
+def command_error_result(envelope: dict[str, Any], error: RunnerCommandError) -> dict[str, Any]:
+    return result_envelope(envelope, ok=False, payload={}, error=error.bridge_error)
 
 
 def invalid_argument_result(envelope: dict[str, Any], message: str) -> dict[str, Any]:
@@ -216,6 +277,49 @@ def normalize_foreground_payload(command_type: str, payload: Any) -> dict[str, A
     return normalized
 
 
+def normalize_write_file_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("write_file payload must be an object.")
+
+    path = payload.get("path")
+    if not isinstance(path, str) or path == "":
+        raise ValueError("path must be a non-empty string.")
+
+    content = payload.get("content")
+    if not isinstance(content, str):
+        raise ValueError("content must be a string.")
+
+    bytes_written = len(content.encode("utf-8"))
+    if bytes_written > MAX_FILE_CONTENT_BYTES:
+        raise ValueError(f"content must be no larger than {MAX_FILE_CONTENT_BYTES} bytes.")
+
+    mode = payload.get("mode")
+    if mode not in {"overwrite", "append", "create_new"}:
+        raise ValueError("mode must be one of overwrite, append, or create_new.")
+
+    return {"path": path, "content": content, "mode": mode}
+
+
+def normalize_read_file_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("read_file payload must be an object.")
+
+    path = payload.get("path")
+    if not isinstance(path, str) or path == "":
+        raise ValueError("path must be a non-empty string.")
+
+    max_bytes = payload.get("max_bytes", DEFAULT_READ_FILE_MAX_BYTES)
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)
+        or max_bytes <= 0
+        or max_bytes > MAX_READ_FILE_BYTES
+    ):
+        raise ValueError(f"max_bytes must be a positive integer no greater than {MAX_READ_FILE_BYTES}.")
+
+    return {"path": path, "max_bytes": max_bytes}
+
+
 async def run_shell(payload: dict[str, Any]) -> ForegroundResult:
     ensure_project_root()
     process = await asyncio.create_subprocess_shell(
@@ -251,6 +355,151 @@ async def run_python(payload: dict[str, Any]) -> ForegroundResult:
             os.unlink(temp_path)
         except FileNotFoundError:
             pass
+
+
+def write_file(payload: dict[str, Any]) -> WriteFileResult:
+    relative_path, target_path = resolve_safe_project_path(payload["path"])
+    content = payload["content"]
+    bytes_written = len(content.encode("utf-8"))
+    if bytes_written > MAX_FILE_CONTENT_BYTES:
+        raise RunnerCommandError("INVALID_ARGUMENT", f"content must be no larger than {MAX_FILE_CONTENT_BYTES} bytes.")
+
+    target_stat = lstat_or_none(target_path)
+    if payload["mode"] == "append":
+        if target_stat is None:
+            raise RunnerCommandError("INVALID_ARGUMENT", "append target must exist.")
+        assert_regular_file_target(target_stat)
+        fd = open_no_follow(target_path, os.O_WRONLY | os.O_APPEND)
+        with os.fdopen(fd, "a", encoding="utf-8") as file:
+            file.write(content)
+        return WriteFileResult(path=relative_path, bytes_written=bytes_written, mode=payload["mode"])
+
+    if target_stat is not None and stat.S_ISLNK(target_stat.st_mode):
+        raise RunnerCommandError("FORBIDDEN_PATH", "symlink targets are not allowed.")
+    if payload["mode"] == "create_new" and target_stat is not None:
+        raise RunnerCommandError("INVALID_ARGUMENT", "create_new target already exists.")
+    if payload["mode"] == "overwrite" and target_stat is not None:
+        assert_regular_file_target(target_stat)
+
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=target_path.parent,
+            prefix=f".{target_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_path = temp_file.name
+
+        if payload["mode"] == "create_new":
+            try:
+                os.link(temp_path, target_path)
+            except FileExistsError:
+                raise RunnerCommandError("INVALID_ARGUMENT", "create_new target already exists.")
+        else:
+            os.replace(temp_path, target_path)
+            temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+    return WriteFileResult(path=relative_path, bytes_written=bytes_written, mode=payload["mode"])
+
+
+def read_file(payload: dict[str, Any]) -> ReadFileResult:
+    relative_path, target_path = resolve_safe_project_path(payload["path"])
+    target_stat = lstat_or_none(target_path)
+    if target_stat is None:
+        raise RunnerCommandError("INVALID_ARGUMENT", "read target does not exist.")
+    assert_regular_file_target(target_stat)
+
+    fd = open_no_follow(target_path, os.O_RDONLY)
+    with os.fdopen(fd, "rb") as file:
+        raw = file.read(payload["max_bytes"] + 1)
+
+    accepted = raw[: payload["max_bytes"]]
+    return ReadFileResult(
+        path=relative_path,
+        content=accepted.decode("utf-8", errors="replace"),
+        bytes_read=len(accepted),
+        truncated=len(raw) > payload["max_bytes"],
+    )
+
+
+def resolve_safe_project_path(input_path: str) -> tuple[str, Path]:
+    relative_path = normalize_relative_project_path(input_path)
+    ensure_project_root()
+
+    root = Path(PROJECT_ROOT)
+    root_stat = os.lstat(root)
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise RunnerCommandError("FORBIDDEN_PATH", "project root must be a real directory.")
+
+    segments = relative_path.split("/")
+    current = root
+    for segment in segments[:-1]:
+        current = current / segment
+        parent_stat = lstat_or_none(current)
+        if parent_stat is None:
+            raise RunnerCommandError("INVALID_ARGUMENT", "parent directory does not exist.")
+        if stat.S_ISLNK(parent_stat.st_mode):
+            raise RunnerCommandError("FORBIDDEN_PATH", "parent directory symlinks are not allowed.")
+        if not stat.S_ISDIR(parent_stat.st_mode):
+            raise RunnerCommandError("INVALID_ARGUMENT", "parent path is not a directory.")
+
+    return relative_path, root.joinpath(*segments)
+
+
+def normalize_relative_project_path(input_path: str) -> str:
+    converted = input_path.replace("\\", "/")
+    if converted.strip() == "" or "\0" in converted:
+        raise RunnerCommandError("FORBIDDEN_PATH", "path must be a non-empty relative path.")
+    if posixpath.isabs(converted) or ntpath.isabs(input_path):
+        raise RunnerCommandError("FORBIDDEN_PATH", "absolute paths are not allowed.")
+    if ".." in converted.split("/"):
+        raise RunnerCommandError("FORBIDDEN_PATH", "path traversal is not allowed.")
+
+    normalized = posixpath.normpath(converted)
+    if (
+        normalized in {"", ".", ".."}
+        or normalized.startswith("../")
+        or ".." in normalized.split("/")
+    ):
+        raise RunnerCommandError("FORBIDDEN_PATH", "path must resolve under the project root.")
+
+    return normalized
+
+
+def lstat_or_none(path: Path) -> os.stat_result | None:
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+
+
+def assert_regular_file_target(target_stat: os.stat_result) -> None:
+    if stat.S_ISLNK(target_stat.st_mode):
+        raise RunnerCommandError("FORBIDDEN_PATH", "symlink targets are not allowed.")
+    if not stat.S_ISREG(target_stat.st_mode):
+        raise RunnerCommandError("INVALID_ARGUMENT", "target must be a regular file.")
+
+
+def open_no_follow(path: Path, flags: int) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        return os.open(path, flags | no_follow)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise RunnerCommandError("FORBIDDEN_PATH", "symlink targets are not allowed.")
+        raise
 
 
 def ensure_project_root() -> None:

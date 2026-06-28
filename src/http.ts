@@ -5,11 +5,15 @@ import {
   bridgeError,
   isDangerousCommandType,
   normalizeForegroundRunPayload,
+  normalizeReadFilePayload,
+  normalizeWriteFilePayload,
   type BridgeError,
+  type ReadFilePayload,
   type RunPythonPayload,
   type RunShellPayload,
   type CommandRow,
   type CommandType,
+  type WriteFilePayload,
 } from "./protocol.js";
 import { RunnerConnection, type RunnerTransport } from "./runner-connection.js";
 
@@ -362,7 +366,9 @@ function parseCommandInput(
     type !== "ping" &&
     type !== "gpu_status" &&
     type !== "run_shell" &&
-    type !== "run_python"
+    type !== "run_python" &&
+    type !== "write_file" &&
+    type !== "read_file"
   ) {
     throw new HttpRouteError(
       400,
@@ -401,6 +407,32 @@ function parseCommandInput(
     }
     normalizedPayload = foregroundPayload;
     normalizedDeadlineMs ??= Math.ceil(foregroundPayload.timeout_sec * 1000);
+  }
+
+  if (type === "write_file") {
+    let filePayload: WriteFilePayload;
+    try {
+      filePayload = normalizeWriteFilePayload(payload ?? {});
+    } catch (error) {
+      if (isBridgeErrorLike(error)) {
+        throw new HttpRouteError(400, error);
+      }
+      throw error;
+    }
+    normalizedPayload = filePayload;
+  }
+
+  if (type === "read_file") {
+    let filePayload: ReadFilePayload;
+    try {
+      filePayload = normalizeReadFilePayload(payload ?? {});
+    } catch (error) {
+      if (isBridgeErrorLike(error)) {
+        throw new HttpRouteError(400, error);
+      }
+      throw error;
+    }
+    normalizedPayload = filePayload;
   }
 
   return {

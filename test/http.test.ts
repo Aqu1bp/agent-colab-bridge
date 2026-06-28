@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SessionBroker } from "../src/broker.js";
 import {
   attachFakeRunnerForTest,
@@ -217,7 +220,7 @@ test("dangerous command types are rejected by default through HTTP", async () =>
   const { handler } = createHarness();
   const session = await createSession(handler);
 
-  const response = await handler(
+  const shellResponse = await handler(
     new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
       method: "POST",
       headers: {
@@ -227,16 +230,34 @@ test("dangerous command types are rejected by default through HTTP", async () =>
       body: JSON.stringify({ type: "run_shell", payload: { command: "echo no" } }),
     }),
   );
-  const envelope = await readEnvelope(response);
+  const shellEnvelope = await readEnvelope(shellResponse);
 
-  assert.equal(response.status, 403);
-  assert.equal(envelope.error?.code, "TOOL_DISABLED");
+  assert.equal(shellResponse.status, 403);
+  assert.equal(shellEnvelope.error?.code, "TOOL_DISABLED");
+
+  const writeResponse = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "dangerous_write_default"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "write_file",
+        payload: { path: "blocked.txt", content: "no", mode: "overwrite" },
+      }),
+    }),
+  );
+  const writeEnvelope = await readEnvelope(writeResponse);
+
+  assert.equal(writeResponse.status, 403);
+  assert.equal(writeEnvelope.error?.code, "TOOL_DISABLED");
 });
 
 test("dangerous command types are accepted through HTTP when explicitly enabled", async () => {
   const { broker, handler } = createHarness({ enableDangerousTools: true });
   const session = await createSession(handler);
-  attachFakeRunnerForTest({
+  const runner = attachFakeRunnerForTest({
     broker,
     sessionId: session.session_id,
     runnerToken: session.runner_token,
@@ -275,6 +296,34 @@ test("dangerous command types are accepted through HTTP when explicitly enabled"
   assert.equal(pythonEnvelope.data?.type, "run_python");
   assert.equal(pythonResult.stdout, "http-python\n");
   assert.equal(pythonResult.exit_code, 0);
+
+  const write = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "dangerous_write_enabled"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "write_file",
+        payload: { path: "http.txt", content: "http-file", mode: "overwrite" },
+      }),
+    }),
+  );
+  const writeEnvelope = await readEnvelope<CommandData>(write);
+  const writeResult = writeEnvelope.data?.result_payload as {
+    path: string;
+    bytes_written: number;
+    mode: string;
+  };
+  assert.equal(write.status, 201);
+  assert.equal(writeEnvelope.data?.type, "write_file");
+  assert.deepEqual(writeResult, {
+    path: "http.txt",
+    bytes_written: 9,
+    mode: "overwrite",
+  });
+  assert.equal(await readFile(join(runner.projectRoot, "http.txt"), "utf8"), "http-file");
 });
 
 test("command result can be polled after original command response", async () => {
@@ -391,6 +440,50 @@ test("gpu_status command type is accepted through command route", async () => {
     ],
     raw: "Fake Colab GPU, 16384 MiB, 1024 MiB, 7 %",
   });
+});
+
+test("read_file command type is accepted through HTTP without dangerous enablement", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "colab-mcp-http-read-"));
+  try {
+    await writeFile(join(projectRoot, "readme.txt"), "abcdef", "utf8");
+    const { broker, handler } = createHarness();
+    const session = await createSession(handler);
+    attachFakeRunnerForTest({
+      broker,
+      sessionId: session.session_id,
+      runnerToken: session.runner_token,
+      options: { projectRoot },
+    });
+
+    const response = await handler(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+        method: "POST",
+        headers: {
+          ...controllerHeaders(session.controller_token, "read_file_default"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ type: "read_file", payload: { path: "readme.txt", max_bytes: 3 } }),
+      }),
+    );
+    const envelope = await readEnvelope<CommandData>(response);
+    const result = envelope.data?.result_payload as {
+      path: string;
+      content: string;
+      bytes_read: number;
+      truncated: boolean;
+    };
+
+    assert.equal(response.status, 201);
+    assert.equal(envelope.data?.type, "read_file");
+    assert.deepEqual(result, {
+      path: "readme.txt",
+      content: "abc",
+      bytes_read: 3,
+      truncated: true,
+    });
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
 });
 
 test("unknown command result returns 404", async () => {

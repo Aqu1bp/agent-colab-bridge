@@ -41,12 +41,22 @@ export const errorCodes = [
 
 export type ErrorCode = (typeof errorCodes)[number];
 
-export type CommandType = "status" | "ping" | "gpu_status" | "run_shell" | "run_python";
+export type CommandType =
+  | "status"
+  | "ping"
+  | "gpu_status"
+  | "run_shell"
+  | "run_python"
+  | "write_file"
+  | "read_file";
 
 export const DEFAULT_FOREGROUND_TIMEOUT_SEC = 30;
 export const MAX_FOREGROUND_TIMEOUT_SEC = 120;
 export const DEFAULT_MAX_OUTPUT_BYTES = 20 * 1024;
 export const MAX_OUTPUT_BYTES = 20 * 1024;
+export const DEFAULT_READ_FILE_MAX_BYTES = 20 * 1024;
+export const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
+export const MAX_READ_FILE_BYTES = 1024 * 1024;
 
 export interface BridgeError {
   code: ErrorCode;
@@ -121,12 +131,38 @@ export interface RunPythonPayload {
   max_output_bytes: number;
 }
 
+export type WriteFileMode = "overwrite" | "append" | "create_new";
+
+export interface WriteFilePayload {
+  path: string;
+  content: string;
+  mode: WriteFileMode;
+}
+
+export interface ReadFilePayload {
+  path: string;
+  max_bytes: number;
+}
+
 export interface ForegroundRunResultPayload {
   stdout: string;
   stderr: string;
   exit_code: number | null;
   duration_ms: number;
   timed_out: boolean;
+  truncated: boolean;
+}
+
+export interface WriteFileResultPayload {
+  path: string;
+  bytes_written: number;
+  mode: WriteFileMode;
+}
+
+export interface ReadFileResultPayload {
+  path: string;
+  content: string;
+  bytes_read: number;
   truncated: boolean;
 }
 
@@ -227,14 +263,18 @@ export function assertCommandType(value: string): asserts value is CommandType {
     value !== "ping" &&
     value !== "gpu_status" &&
     value !== "run_shell" &&
-    value !== "run_python"
+    value !== "run_python" &&
+    value !== "write_file" &&
+    value !== "read_file"
   ) {
     throw bridgeError("INVALID_ARGUMENT", `Unsupported command type: ${value}`);
   }
 }
 
-export function isDangerousCommandType(value: string): value is "run_shell" | "run_python" {
-  return value === "run_shell" || value === "run_python";
+export function isDangerousCommandType(
+  value: string,
+): value is "run_shell" | "run_python" | "write_file" {
+  return value === "run_shell" || value === "run_python" || value === "write_file";
 }
 
 export function normalizeForegroundRunPayload(
@@ -278,6 +318,62 @@ export function normalizeForegroundRunPayload(
     timeout_sec: timeoutSec,
     max_output_bytes: maxOutputBytes,
   };
+}
+
+export function normalizeWriteFilePayload(payload: unknown): WriteFilePayload {
+  const record = normalizeObjectPayload(payload, "write_file payload");
+  const path = record.path;
+  if (typeof path !== "string" || path.length === 0) {
+    throw bridgeError("INVALID_ARGUMENT", "path must be a non-empty string.");
+  }
+
+  const content = record.content;
+  if (typeof content !== "string") {
+    throw bridgeError("INVALID_ARGUMENT", "content must be a string.");
+  }
+
+  const bytes = Buffer.byteLength(content, "utf8");
+  if (bytes > MAX_FILE_CONTENT_BYTES) {
+    throw bridgeError(
+      "INVALID_ARGUMENT",
+      `content must be no larger than ${MAX_FILE_CONTENT_BYTES} bytes.`,
+    );
+  }
+
+  const mode = record.mode;
+  if (mode !== "overwrite" && mode !== "append" && mode !== "create_new") {
+    throw bridgeError(
+      "INVALID_ARGUMENT",
+      "mode must be one of overwrite, append, or create_new.",
+    );
+  }
+
+  return { path, content, mode };
+}
+
+export function normalizeReadFilePayload(payload: unknown): ReadFilePayload {
+  const record = normalizeObjectPayload(payload, "read_file payload");
+  const path = record.path;
+  if (typeof path !== "string" || path.length === 0) {
+    throw bridgeError("INVALID_ARGUMENT", "path must be a non-empty string.");
+  }
+
+  const maxBytes = normalizePositiveInteger(
+    record.max_bytes,
+    "max_bytes",
+    DEFAULT_READ_FILE_MAX_BYTES,
+    MAX_READ_FILE_BYTES,
+  );
+
+  return { path, max_bytes: maxBytes };
+}
+
+function normalizeObjectPayload(payload: unknown, name: string): Record<string, unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw bridgeError("INVALID_ARGUMENT", `${name} must be an object.`);
+  }
+
+  return payload as Record<string, unknown>;
 }
 
 function normalizePositiveNumber(

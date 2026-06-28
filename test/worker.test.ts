@@ -333,7 +333,7 @@ test("Worker command route disables dangerous command types by default", async (
   const env = { ADMIN_SECRET: adminSecret };
   const session = await createSession(env);
 
-  const disabled = await fetchWorker(
+  const shellDisabled = await fetchWorker(
     env,
     new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
       method: "POST",
@@ -344,10 +344,29 @@ test("Worker command route disables dangerous command types by default", async (
       body: JSON.stringify({ type: "run_shell", payload: { command: "echo no" } }),
     }),
   );
-  const envelope = await readEnvelope(disabled);
+  const shellEnvelope = await readEnvelope(shellDisabled);
 
-  assert.equal(disabled.status, 403);
-  assert.equal(envelope.error?.code, "TOOL_DISABLED");
+  assert.equal(shellDisabled.status, 403);
+  assert.equal(shellEnvelope.error?.code, "TOOL_DISABLED");
+
+  const writeDisabled = await fetchWorker(
+    env,
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+      method: "POST",
+      headers: {
+        ...controllerHeaders(session.controller_token, "worker_write_disabled"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "write_file",
+        payload: { path: "blocked.txt", content: "no", mode: "overwrite" },
+      }),
+    }),
+  );
+  const writeEnvelope = await readEnvelope(writeDisabled);
+
+  assert.equal(writeDisabled.status, 403);
+  assert.equal(writeEnvelope.error?.code, "TOOL_DISABLED");
 });
 
 test("Worker runner/ws route requires runner auth and authenticated attach updates status", async () => {

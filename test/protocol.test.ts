@@ -2,9 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   PROTOCOL_VERSION,
+  MAX_FILE_CONTENT_BYTES,
+  MAX_READ_FILE_BYTES,
   createCommandEnvelope,
   createResultEnvelope,
   normalizeForegroundRunPayload,
+  normalizeReadFilePayload,
+  normalizeWriteFilePayload,
   payloadHash,
 } from "../src/protocol.js";
 
@@ -80,6 +84,28 @@ test("protocol helpers support run_shell and run_python command envelopes", () =
   assert.equal(createResultEnvelope({ command: python, ok: true, payload: {} }).type, "run_python_result");
 });
 
+test("protocol helpers support write_file and read_file command envelopes", () => {
+  const write = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_write",
+    type: "write_file",
+    payload: { path: "src/train.py", content: "print(1)", mode: "overwrite" },
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+  const read = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_read",
+    type: "read_file",
+    payload: { path: "src/train.py", max_bytes: 1024 },
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+
+  assert.equal(createResultEnvelope({ command: write, ok: true, payload: {} }).type, "write_file_result");
+  assert.equal(createResultEnvelope({ command: read, ok: true, payload: {} }).type, "read_file_result");
+});
+
 test("foreground command payload validation applies defaults and caps", () => {
   assert.deepEqual(normalizeForegroundRunPayload("run_shell", { command: "pwd" }), {
     command: "pwd",
@@ -102,6 +128,42 @@ test("foreground command payload validation applies defaults and caps", () => {
     normalizeForegroundRunPayload("run_python", {
       code: "print('too much')",
       max_output_bytes: 20 * 1024 + 1,
+    }),
+  );
+});
+
+test("file command payload validation applies defaults and caps", () => {
+  assert.deepEqual(
+    normalizeWriteFilePayload({ path: "notes.txt", content: "hello", mode: "append" }),
+    {
+      path: "notes.txt",
+      content: "hello",
+      mode: "append",
+    },
+  );
+  assert.deepEqual(normalizeReadFilePayload({ path: "notes.txt" }), {
+    path: "notes.txt",
+    max_bytes: 20 * 1024,
+  });
+
+  assert.throws(() =>
+    normalizeWriteFilePayload({
+      path: "large.txt",
+      content: "a".repeat(MAX_FILE_CONTENT_BYTES + 1),
+      mode: "overwrite",
+    }),
+  );
+  assert.throws(() =>
+    normalizeReadFilePayload({
+      path: "large.txt",
+      max_bytes: MAX_READ_FILE_BYTES + 1,
+    }),
+  );
+  assert.throws(() =>
+    normalizeWriteFilePayload({
+      path: "notes.txt",
+      content: "hello",
+      mode: "invalid",
     }),
   );
 });
