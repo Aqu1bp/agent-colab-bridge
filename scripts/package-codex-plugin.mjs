@@ -23,8 +23,10 @@ await copyFile(".mcp.json", ".mcp.json");
 await copyFile("LICENSE", "LICENSE");
 await copyFile("README.md", "README.md");
 await copyFile("SECURITY.md", "SECURITY.md");
+await copyFile("scripts/local-bridge-common.mjs", "scripts/local-bridge-common.mjs");
 await copyFile("scripts/mcp-entry.mjs", "scripts/mcp-entry.mjs");
 await copyFile("scripts/colab-reconnect-runner.py", "scripts/colab-reconnect-runner.py");
+await copyFile("scripts/reconnect-runner.mjs", "scripts/reconnect-runner.mjs");
 
 const sourcePackage = JSON.parse(await readFile(resolve(repoRoot, "package.json"), "utf8"));
 const pluginPackage = {
@@ -34,6 +36,9 @@ const pluginPackage = {
   license: sourcePackage.license,
   type: sourcePackage.type,
   engines: sourcePackage.engines,
+  scripts: {
+    "runner:reconnect": "node scripts/reconnect-runner.mjs",
+  },
 };
 await writeFile(resolve(outputRoot, "package.json"), `${JSON.stringify(pluginPackage, null, 2)}\n`);
 

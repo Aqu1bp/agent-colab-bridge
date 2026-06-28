@@ -263,7 +263,14 @@ The doctor checks Node, installed package files, `uvx`, `google-colab-cli`,
 authenticated bridge status when the local controller token exists.
 
 If a Worker deploy disconnects a runner that was started by this repo's
-bootstrap script, reconnect it without creating a new bridge session:
+bootstrap script, reconnect it without creating a new bridge session. From
+Codex, call the MCP tool:
+
+```text
+colab_reconnect_runner
+```
+
+From a shell in the source checkout or packaged plugin, run:
 
 ```bash
 npm run runner:reconnect

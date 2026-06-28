@@ -41,6 +41,9 @@ test("tool metadata declares annotations and output schemas", () => {
   assert.equal(toolByName("colab_status")?.enabledByDefault, true);
   assert.equal(toolByName("colab_gpu_status")?.enabledByDefault, true);
   assert.equal(toolByName("colab_gpu_status")?.annotations.readOnlyHint, true);
+  assert.equal(toolByName("colab_reconnect_runner")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_reconnect_runner")?.annotations.readOnlyHint, false);
+  assert.equal(toolByName("colab_reconnect_runner")?.annotations.destructiveHint, false);
   assert.equal(toolByName("colab_run_shell")?.enabledByDefault, false);
   assert.equal(toolByName("colab_run_shell")?.annotations.destructiveHint, true);
   assert.equal(toolByName("colab_write_file")?.enabledByDefault, false);

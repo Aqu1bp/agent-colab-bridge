@@ -1,10 +1,16 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as processStdin, stdout as processStdout } from "node:process";
-import { pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { bridgeError, normalizeForegroundRunPayload, normalizeInterruptJobPayload, normalizeReadFilePayload, normalizeStartJobPayload, normalizeTailJobPayload, normalizeWriteFilePayload, } from "./protocol.js";
 import { callToolError, callToolSuccess, disabledToolResult, isEnabledDangerousExecutionTool, toolByName, toolDefinitions, } from "./mcp.js";
 import { BridgeHttpClient } from "./mcp-client.js";
 import { BridgeConfigError, loadLocalBridgeConfig, } from "./mcp-config.js";
+const DEFAULT_RECONNECT_TIMEOUT_SEC = 60;
+const MAX_RECONNECT_TIMEOUT_SEC = 300;
+const LOCAL_COMMAND_OUTPUT_BYTES = 20 * 1024;
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export class ColabMcpServer {
     options;
     config;
@@ -102,6 +108,25 @@ export class ColabMcpServer {
                     return callToolError(command.error);
                 }
                 return callToolSuccess("GPU status command succeeded.", command);
+            }
+            if (tool.name === "colab_reconnect_runner") {
+                let payload;
+                try {
+                    payload = normalizeReconnectRunnerPayload(params.arguments);
+                }
+                catch (error) {
+                    if (isBridgeErrorLike(error)) {
+                        return callToolError(error);
+                    }
+                    throw error;
+                }
+                const result = await this.runReconnectRunner(payload);
+                if (result.exit_code !== 0 || result.timed_out) {
+                    return callToolError(bridgeError("INTERNAL_ERROR", `Colab runner reconnect failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`, true));
+                }
+                return callToolSuccess(payload.dryRun
+                    ? "Runner reconnect dry run completed."
+                    : "Runner reconnect command completed.", result);
             }
             if (tool.name === "colab_run_shell" || tool.name === "colab_run_python") {
                 let payload;
@@ -212,6 +237,12 @@ export class ColabMcpServer {
             handler: this.options.httpHandler,
         });
         return request(client);
+    }
+    async runReconnectRunner(payload) {
+        if (this.options.reconnectRunner) {
+            return this.options.reconnectRunner(payload);
+        }
+        return runReconnectRunnerScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
     }
     resolveConfig() {
         if (this.config) {
@@ -341,6 +372,137 @@ function isBridgeErrorLike(value) {
     return (typeof record.code === "string" &&
         typeof record.message === "string" &&
         typeof record.retryable === "boolean");
+}
+function normalizeReconnectRunnerPayload(args) {
+    const colabSession = optionalString(args.colab_session, "colab_session");
+    const colabConfig = optionalString(args.colab_config, "colab_config");
+    const projectRoot = optionalString(args.project_root, "project_root");
+    const timeoutSec = optionalNumber(args.timeout_sec, "timeout_sec") ?? DEFAULT_RECONNECT_TIMEOUT_SEC;
+    const dryRun = optionalBoolean(args.dry_run, "dry_run") ?? false;
+    if (timeoutSec <= 0 || timeoutSec > MAX_RECONNECT_TIMEOUT_SEC) {
+        throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_RECONNECT_TIMEOUT_SEC}.`, false);
+    }
+    return {
+        colabSession,
+        colabConfig,
+        projectRoot,
+        timeoutSec,
+        dryRun,
+    };
+}
+function optionalString(value, label) {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== "string" || !value.trim()) {
+        throw bridgeError("INVALID_ARGUMENT", `${label} must be a non-empty string.`, false);
+    }
+    return value.trim();
+}
+function optionalNumber(value, label) {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw bridgeError("INVALID_ARGUMENT", `${label} must be a number.`, false);
+    }
+    return value;
+}
+function optionalBoolean(value, label) {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== "boolean") {
+        throw bridgeError("INVALID_ARGUMENT", `${label} must be a boolean.`, false);
+    }
+    return value;
+}
+function runReconnectRunnerScript(payload, packageRoot) {
+    const command = [
+        process.execPath,
+        "scripts/reconnect-runner.mjs",
+        ...(payload.dryRun ? ["--dry-run"] : []),
+        ...(payload.colabSession ? ["--colab-session", payload.colabSession] : []),
+        ...(payload.colabConfig ? ["--colab-config", payload.colabConfig] : []),
+        ...(payload.projectRoot ? ["--project-root", payload.projectRoot] : []),
+        "--timeout",
+        String(payload.timeoutSec),
+    ];
+    const startedAt = Date.now();
+    const processTimeoutMs = Math.ceil((payload.timeoutSec + 30) * 1000);
+    return new Promise((resolvePromise) => {
+        const child = spawn(command[0], command.slice(1), {
+            cwd: packageRoot,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: process.env,
+        });
+        let stdout = "";
+        let stderr = "";
+        let truncated = false;
+        let timedOut = false;
+        let settled = false;
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGTERM");
+        }, processTimeoutMs);
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+            const appended = appendBounded(stdout, chunk, LOCAL_COMMAND_OUTPUT_BYTES);
+            stdout = appended.text;
+            truncated = truncated || appended.truncated;
+        });
+        child.stderr.on("data", (chunk) => {
+            const appended = appendBounded(stderr, chunk, LOCAL_COMMAND_OUTPUT_BYTES);
+            stderr = appended.text;
+            truncated = truncated || appended.truncated;
+        });
+        child.on("error", (error) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timeout);
+            const appended = appendBounded(stderr, error.message, LOCAL_COMMAND_OUTPUT_BYTES);
+            resolvePromise({
+                command,
+                stdout,
+                stderr: appended.text,
+                exit_code: 127,
+                duration_ms: Date.now() - startedAt,
+                timed_out: false,
+                truncated: truncated || appended.truncated,
+                dry_run: payload.dryRun,
+            });
+        });
+        child.on("close", (code) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timeout);
+            resolvePromise({
+                command,
+                stdout,
+                stderr,
+                exit_code: timedOut ? null : code ?? 1,
+                duration_ms: Date.now() - startedAt,
+                timed_out: timedOut,
+                truncated,
+                dry_run: payload.dryRun,
+            });
+        });
+    });
+}
+function appendBounded(existing, chunk, maxBytes) {
+    if (Buffer.byteLength(existing, "utf8") >= maxBytes) {
+        return { text: existing, truncated: true };
+    }
+    const combined = `${existing}${chunk}`;
+    if (Buffer.byteLength(combined, "utf8") <= maxBytes) {
+        return { text: combined, truncated: false };
+    }
+    return { text: Buffer.from(combined, "utf8").subarray(0, maxBytes).toString("utf8"), truncated: true };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     await runStdioMcpServer();

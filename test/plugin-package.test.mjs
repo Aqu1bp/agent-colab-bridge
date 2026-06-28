@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, lstatSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const pluginRoot = resolve("plugins", "codex-colab-bridge");
@@ -13,6 +13,12 @@ test("Codex marketplace plugin payload is a real packaged directory", async () =
   assert.equal(existsSync(resolve(pluginRoot, ".mcp.json")), true);
   assert.equal(existsSync(resolve(pluginRoot, "dist", "src", "mcp-server.js")), true);
   assert.equal(existsSync(resolve(pluginRoot, "scripts", "mcp-entry.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "local-bridge-common.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "reconnect-runner.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "colab-reconnect-runner.py")), true);
+
+  const packageJson = JSON.parse(await readFile(resolve(pluginRoot, "package.json"), "utf8"));
+  assert.equal(packageJson.scripts?.["runner:reconnect"], "node scripts/reconnect-runner.mjs");
 
   const entries = await readdir(pluginRoot);
   assert.equal(entries.includes(".git"), false);

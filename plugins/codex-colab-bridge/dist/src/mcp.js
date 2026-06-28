@@ -38,6 +38,12 @@ export const dangerousRemoteAnnotations = {
     idempotentHint: false,
     openWorldHint: true,
 };
+export const localOperationalAnnotations = {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+};
 export const toolDefinitions = [
     {
         name: "colab_status",
@@ -61,6 +67,24 @@ export const toolDefinitions = [
         inputSchema: emptyObjectSchema,
         outputSchema: structuredOutputSchema,
         annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_reconnect_runner",
+        description: "Run the local google-colab-cli reconnect helper for an offline Colab runner without requiring the runner token locally.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                colab_session: { type: "string", default: "codex-colab-bridge" },
+                colab_config: { type: "string" },
+                project_root: { type: "string" },
+                timeout_sec: { type: "number", default: 60, minimum: 1, maximum: 300 },
+                dry_run: { type: "boolean", default: false },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: localOperationalAnnotations,
         enabledByDefault: true,
     },
     {

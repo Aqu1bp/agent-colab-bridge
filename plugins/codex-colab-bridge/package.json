@@ -6,5 +6,8 @@
   "type": "module",
   "engines": {
     "node": ">=20"
+  },
+  "scripts": {
+    "runner:reconnect": "node scripts/reconnect-runner.mjs"
   }
 }

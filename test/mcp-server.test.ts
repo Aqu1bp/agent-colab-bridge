@@ -136,6 +136,7 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   const startJob = result.tools.find((tool) => tool.name === "colab_start_job");
   const tailJob = result.tools.find((tool) => tool.name === "colab_tail_job");
   const interruptJob = result.tools.find((tool) => tool.name === "colab_interrupt_job");
+  const reconnectRunner = result.tools.find((tool) => tool.name === "colab_reconnect_runner");
 
   assert.ok(runShell);
   assert.equal(typeof runShell.description, "string");
@@ -227,6 +228,20 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
     openWorldHint: true,
   });
   assert.equal("enabledByDefault" in interruptJob, false);
+
+  assert.ok(reconnectRunner);
+  const reconnectSchema = reconnectRunner.inputSchema as {
+    properties: Record<string, { default?: unknown; maximum?: number }>;
+  };
+  assert.equal(reconnectSchema.properties.timeout_sec?.default, 60);
+  assert.equal(reconnectSchema.properties.timeout_sec?.maximum, 300);
+  assert.deepEqual(reconnectRunner.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in reconnectRunner, false);
 });
 
 test("colab_status calls the local HTTP handler and returns MCP CallToolResult shape", async () => {
@@ -304,6 +319,75 @@ test("colab_gpu_status creates a gpu_status command and returns the serialized c
   assert.equal(data.result_payload.available, true);
   assert.equal(data.result_payload.source, "fake");
   assert.equal(data.result_payload.gpus[0]?.name, "Fake Colab GPU");
+});
+
+test("colab_reconnect_runner runs locally without bridge config", async () => {
+  const payloads: unknown[] = [];
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      reconnectRunner: async (payload) => {
+        payloads.push(payload);
+        return {
+          command: ["node", "scripts/reconnect-runner.mjs", "--dry-run"],
+          stdout: "Runner reconnect dry run completed.",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 5,
+          timed_out: false,
+          truncated: false,
+          dry_run: payload.dryRun,
+        };
+      },
+    }),
+  );
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_reconnect_runner",
+    arguments: {
+      colab_session: "named",
+      colab_config: "/tmp/colab.json",
+      project_root: "/content/custom",
+      timeout_sec: 90,
+      dry_run: true,
+    },
+  });
+  const result = callToolResult(response);
+  const data = result.structuredContent.data as {
+    exit_code: number;
+    dry_run: boolean;
+  };
+
+  assert.equal(result.isError, false);
+  assert.equal(data.exit_code, 0);
+  assert.equal(data.dry_run, true);
+  assert.deepEqual(payloads, [
+    {
+      colabSession: "named",
+      colabConfig: "/tmp/colab.json",
+      projectRoot: "/content/custom",
+      timeoutSec: 90,
+      dryRun: true,
+    },
+  ]);
+});
+
+test("colab_reconnect_runner validates arguments before running locally", async () => {
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      reconnectRunner: async () => {
+        throw new Error("should not run");
+      },
+    }),
+  );
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_reconnect_runner",
+    arguments: { timeout_sec: 0 },
+  });
+  const result = callToolResult(response);
+
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error?.code, "INVALID_ARGUMENT");
 });
 
 test("duplicate MCP calls generate fresh HTTP nonce values", async () => {
