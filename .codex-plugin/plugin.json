@@ -3,12 +3,8 @@
   "version": "0.1.0",
   "description": "Use a Google Colab runtime from Codex through a Cloudflare-backed MCP bridge.",
   "author": {
-    "name": "Codex Colab Bridge Contributors",
-    "email": "security@example.invalid",
-    "url": "https://github.com/example/codex-colab-bridge"
+    "name": "Codex Colab Bridge Contributors"
   },
-  "homepage": "https://github.com/example/codex-colab-bridge",
-  "repository": "https://github.com/example/codex-colab-bridge",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -30,9 +26,6 @@
       "Interactive",
       "Write"
     ],
-    "websiteURL": "https://github.com/example/codex-colab-bridge",
-    "privacyPolicyURL": "https://github.com/example/codex-colab-bridge/blob/main/SECURITY.md",
-    "termsOfServiceURL": "https://github.com/example/codex-colab-bridge/blob/main/LICENSE",
     "defaultPrompt": [
       "Check my Colab GPU status",
       "Run a short command in Colab",
