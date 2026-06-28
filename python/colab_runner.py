@@ -674,6 +674,7 @@ async def run_shell(payload: dict[str, Any]) -> ForegroundResult:
     process = await asyncio.create_subprocess_shell(
         payload["command"],
         cwd=PROJECT_ROOT,
+        env=child_process_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
@@ -692,8 +693,10 @@ async def run_python(payload: dict[str, Any]) -> ForegroundResult:
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
+            "-u",
             temp_path,
             cwd=PROJECT_ROOT,
+            env=child_process_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
@@ -721,6 +724,7 @@ async def start_job(payload: dict[str, Any]) -> StartJobResult:
     process = await asyncio.create_subprocess_shell(
         payload["command"],
         cwd=PROJECT_ROOT,
+        env=child_process_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
@@ -901,6 +905,12 @@ def open_no_follow(path: Path, flags: int) -> int:
 
 def ensure_project_root() -> None:
     Path(PROJECT_ROOT).mkdir(parents=True, exist_ok=True)
+
+
+def child_process_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    return env
 
 
 async def collect_process(

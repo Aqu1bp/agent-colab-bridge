@@ -73,6 +73,7 @@ test("generated runner start code reads token config without embedding or printi
   assert.match(source, /env\['COLAB_BRIDGE_SESSION_ID'\] = config\['session_id'\]/);
   assert.match(source, /env\['COLAB_BRIDGE_RUNNER_TOKEN'\] = config\['runner_token'\]/);
   assert.match(source, /env\['COLAB_BRIDGE_PROJECT_ROOT'\] = config\['project_root'\]/);
+  assert.match(source, /env\.setdefault\('PYTHONUNBUFFERED', '1'\)/);
   assert.match(source, /RUNNER_TOKEN=set/);
   assert.match(source, /config_path\.unlink/);
   assert.doesNotMatch(source, /runner_secret/);

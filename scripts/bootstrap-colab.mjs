@@ -295,6 +295,7 @@ export function renderRunnerStartScript(options) {
     "env['COLAB_BRIDGE_SESSION_ID'] = config['session_id']",
     "env['COLAB_BRIDGE_RUNNER_TOKEN'] = config['runner_token']",
     "env['COLAB_BRIDGE_PROJECT_ROOT'] = config['project_root']",
+    "env.setdefault('PYTHONUNBUFFERED', '1')",
     "log_handle = open(log_path, 'ab', buffering=0)",
     "process = subprocess.Popen(",
     "    [sys.executable, str(runner_path)],",

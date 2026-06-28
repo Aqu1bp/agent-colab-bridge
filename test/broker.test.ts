@@ -189,6 +189,27 @@ test("fake runner run_python returns bounded foreground execution result", async
   assert.equal(result.truncated, false);
 });
 
+test("fake runner run_python sees unbuffered Python environment", async () => {
+  const broker = new SessionBroker();
+  const session = broker.createSession();
+  const controllerAuth = authFactory(session.controllerToken, "controller");
+  const runnerAuth = authFactory(session.runnerToken, "runner");
+  new FakeRunner(broker, session.sessionId, runnerAuth).attach();
+
+  const command = await broker.createCommand(session.sessionId, controllerAuth(), {
+    type: "run_python",
+    payload: {
+      code: "import os\nprint(os.environ.get('PYTHONUNBUFFERED'))",
+      timeout_sec: 5,
+      max_output_bytes: 1024,
+    },
+  });
+  const result = command.resultPayload as { stdout: string };
+
+  assert.equal(command.state, "succeeded");
+  assert.equal(result.stdout, "1\n");
+});
+
 test("fake runner foreground execution reports truncation and timeout", async () => {
   const broker = new SessionBroker();
   const session = broker.createSession();

@@ -59,6 +59,27 @@ test("fake runner starts a background job and tails logs incrementally", async (
   }
 });
 
+test("fake runner background jobs inherit unbuffered Python environment", async () => {
+  const harness = await createJobHarness();
+  try {
+    const start = await createJobCommand(harness, "start_job", {
+      command: nodeCommand("console.log(process.env.PYTHONUNBUFFERED)"),
+    });
+    const startResult = start.resultPayload as { job_id: string; status: string };
+
+    assert.equal(start.state, "succeeded");
+    assert.equal(startResult.status, "running");
+
+    const tail = await waitForTail(harness, startResult.job_id, 0, (result) =>
+      result.events.some((event) => event.text.includes("1")),
+    );
+    const payload = tail.resultPayload as TailPayload;
+    assert.equal(payload.events.some((event) => event.text.includes("1")), true);
+  } finally {
+    await rm(harness.projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("fake runner rejects a second active background job", async () => {
   const harness = await createJobHarness();
   try {

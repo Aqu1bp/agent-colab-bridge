@@ -224,7 +224,7 @@ async function runFakePython(payload, projectRoot) {
         await writeFile(filePath, payload.code, "utf8");
         return await runBoundedProcess({
             command: "python3",
-            args: [filePath],
+            args: ["-u", filePath],
             shell: false,
             cwd: projectRoot,
             timeoutSec: payload.timeout_sec,
@@ -245,6 +245,7 @@ function runBoundedProcess(input) {
     return new Promise((resolve) => {
         const child = spawn(input.command, input.args, {
             cwd: input.cwd,
+            env: childProcessEnv(),
             shell: input.shell,
             stdio: ["ignore", "pipe", "pipe"],
         });
@@ -308,6 +309,7 @@ class FakeBackgroundJob {
     static start(payload, projectRoot) {
         const child = spawn(payload.command, [], {
             cwd: projectRoot,
+            env: childProcessEnv(),
             shell: true,
             detached: process.platform !== "win32",
             stdio: ["ignore", "pipe", "pipe"],
@@ -418,6 +420,12 @@ class FakeBackgroundJob {
             }
         }
     }
+}
+function childProcessEnv() {
+    return {
+        ...process.env,
+        PYTHONUNBUFFERED: process.env.PYTHONUNBUFFERED ?? "1",
+    };
 }
 class JobLogRing {
     maxBytes;

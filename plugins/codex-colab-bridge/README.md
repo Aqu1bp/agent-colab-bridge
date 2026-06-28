@@ -214,6 +214,11 @@ Use `google-colab-cli upload` / `download` or external storage such as Google
 Drive, Google Cloud Storage, Hugging Face Hub, Cloudflare R2, or GitHub Releases
 for large artifacts.
 
+For Python model jobs, the runner sets `PYTHONUNBUFFERED=1` for child processes
+and runs direct `colab_run_python` snippets with `python -u`. If a framework or
+custom launcher still delays logs, use explicit `python -u ...` commands or
+`print(..., flush=True)` at important progress points.
+
 ## Local Setup And Doctor
 
 Create a bridge session and write local MCP config:

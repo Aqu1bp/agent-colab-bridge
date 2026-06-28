@@ -78,6 +78,7 @@ def start_runner(bridge_env: dict[str, str]) -> int:
     env = os.environ.copy()
     env.update(bridge_env)
     env["COLAB_BRIDGE_PROJECT_ROOT"] = str(PROJECT_ROOT)
+    env.setdefault("PYTHONUNBUFFERED", "1")
 
     log_handle = open(LOG_PATH, "ab", buffering=0)
     process = subprocess.Popen(

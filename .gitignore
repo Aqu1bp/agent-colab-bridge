@@ -1,4 +1,6 @@
 node_modules/
 dist/
+__pycache__/
+*.pyc
 !plugins/codex-colab-bridge/dist/
 !plugins/codex-colab-bridge/dist/**

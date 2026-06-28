@@ -14,6 +14,7 @@ Use the Codex Colab Bridge tools only for Colab runtimes the user controls. The 
 - Prefer `colab_gpu_status` for GPU inspection instead of ad hoc `nvidia-smi` unless more detail is needed.
 - Use `colab_run_shell` or `colab_run_python` only for short foreground checks.
 - Use `colab_start_job`, `colab_tail_job`, and `colab_interrupt_job` for long training/eval jobs.
+- Python child processes default to `PYTHONUNBUFFERED=1`; still prefer `python -u ...` or `flush=True` when model progress logs must appear immediately.
 - Keep generated files under `/content/project` unless the user explicitly asks for another location.
 - Do not move datasets, checkpoints, or large logs through Cloudflare or MCP file tools. Use Google Drive, GCS, Hugging Face Hub, GitHub Releases, or `google-colab-cli upload/download`.
 - Assume Colab VM deletion loses active processes and runner-owned job/log state.
