@@ -266,11 +266,25 @@ If a Worker deploy disconnects a runner that was started by this repo's
 bootstrap script, reconnect it without creating a new bridge session:
 
 ```bash
-uvx --from google-colab-cli colab exec -s <colab-session-name> -f scripts/colab-reconnect-runner.py
+npm run runner:reconnect
 ```
 
-The reconnect helper reads the bridge environment from the existing Colab runner
-process, restarts the runner, and prints only redacted token status.
+The reconnect helper runs through `google-colab-cli`, reads the bridge
+environment from the existing Colab runner process, restarts the runner, and
+prints only redacted token status. Use `--colab-session <name>` for a non-default
+session and `--project-root /content/path` if the runner was bootstrapped
+outside `/content/project`.
+
+This is the safe first recovery step for `controller_connected=true` and
+`runner_connected=false`. It only works while the Colab VM still has the
+previous runner process environment available. If the runner process or VM is
+gone, recreate/bootstrap instead:
+
+```bash
+npm run setup:all -- --bootstrap --smoke
+# or choose a runtime again:
+npm run runtime:recreate -- --gpu T4 --yes --smoke
+```
 
 ## Bootstrap A Colab Runtime
 

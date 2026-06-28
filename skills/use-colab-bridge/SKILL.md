@@ -32,18 +32,27 @@ Use the Codex Colab Bridge tools only for Colab runtimes the user controls. The 
 ## Offline Runner
 
 If `colab_status` says the runner is offline and the session was already
-started by this repo's bootstrap, ask the user to reconnect the runner first:
+started by this repo's bootstrap, use the source checkout reconnect command as
+the safe first recovery step:
 
 ```bash
-uvx --from google-colab-cli colab exec -s codex-colab-bridge -f scripts/colab-reconnect-runner.py
+npm run runner:reconnect
 ```
 
-If the bridge session, local config, or Worker deployment should be recreated,
-ask the user to rerun setup:
+Then call `colab_status` again. This command does not need the runner token
+locally; it reads the old runner process environment inside the Colab VM and
+starts a fresh runner process. It only works if the Colab VM and old runner
+process environment still exist.
+
+If reconnect fails because the pid file, runner process, or process environment
+is gone, recreate/bootstrap instead:
 
 ```bash
-npm run setup:all -- --smoke
+npm run setup:all -- --bootstrap --smoke
 ```
+
+Use `npm run runtime:recreate -- --gpu <GPU|none> --yes --smoke` when the runtime
+itself should be recreated or the accelerator should change.
 
 Do not try to recover runner tokens from logs or chat.
 
