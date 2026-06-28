@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_ROOT = "/content/project"
+PROJECT_ROOT = os.environ.get("COLAB_BRIDGE_PROJECT_ROOT", "/content/project")
 DEFAULT_FOREGROUND_TIMEOUT_SEC = 30
 MAX_FOREGROUND_TIMEOUT_SEC = 120
 DEFAULT_MAX_OUTPUT_BYTES = 20 * 1024

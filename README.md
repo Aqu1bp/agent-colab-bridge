@@ -9,6 +9,78 @@ npm install
 npm test
 ```
 
+## Bootstrap A Colab Runtime
+
+The primary bootstrap flow uses PyPI's `google-colab-cli` through `uvx`. The CLI
+provisions or reuses the Colab runtime; this MCP bridge controls the already-live
+runner after it connects.
+
+Create a bridge session through the Worker first, then export the values needed
+by the Colab runner. The runner token is only for the Colab-side runner; the
+controller token is optional here and is used only for status polling.
+
+```bash
+export COLAB_MCP_BRIDGE_BASE_URL=https://bridge.example
+export COLAB_MCP_BRIDGE_SESSION_ID=sess_...
+export COLAB_MCP_BRIDGE_RUNNER_TOKEN=br_...
+export COLAB_MCP_BRIDGE_CONTROLLER_TOKEN=br_... # optional status polling
+
+npm run bootstrap:colab
+```
+
+The bootstrap script shells out to:
+
+```bash
+uvx --from google-colab-cli colab ...
+```
+
+It checks for a named Colab session, creates one if needed, requests a T4 GPU by
+default, installs `websockets`, creates `/content/project`, uploads
+`python/colab_runner.py`, uploads a temporary runner config file, and starts the
+runner in the Colab runtime with `COLAB_BRIDGE_URL`,
+`COLAB_BRIDGE_SESSION_ID`, and `COLAB_BRIDGE_RUNNER_TOKEN` set. It also sets
+`COLAB_BRIDGE_PROJECT_ROOT` so the runner uses the requested project root. Token
+values are not printed, and the start script deletes the uploaded runner config
+after reading it.
+
+Useful options:
+
+```bash
+npm run bootstrap:colab -- --dry-run
+npm run bootstrap:colab -- --colab-session colab-mcp-bridge --gpu T4
+npm run bootstrap:colab -- --project-root /content/project --runner-path python/colab_runner.py
+npm run bootstrap:colab -- --bridge-config ./bootstrap.json
+```
+
+The explicit bootstrap config can contain `base_url` or `worker_url`,
+`session_id`, `runner_token`, and optional `controller_token`,
+`colab_session`, `project_root`, `runner_path`, `remote_runner_path`,
+`remote_config_path`, `gpu`, and `colab_config`. The script does not create or
+modify local user config.
+
+If `google-colab-cli` is not available or cannot authenticate, the fallback is a
+manual Colab notebook bootstrap:
+
+```python
+%pip install websockets
+from pathlib import Path
+import os
+
+Path("/content/project").mkdir(parents=True, exist_ok=True)
+os.environ["COLAB_BRIDGE_URL"] = "https://bridge.example"
+os.environ["COLAB_BRIDGE_SESSION_ID"] = "sess_..."
+os.environ["COLAB_BRIDGE_RUNNER_TOKEN"] = "br_..."
+os.environ["COLAB_BRIDGE_PROJECT_ROOT"] = "/content/project"
+
+# Upload python/colab_runner.py to /content/project/colab_runner.py first.
+%run /content/project/colab_runner.py
+```
+
+Use `google-colab-cli upload` / `download` or external storage such as Google
+Drive, GCS, Hugging Face Hub, or GitHub Releases for large artifacts. Do not send
+datasets, checkpoints, package caches, or full training outputs through
+Cloudflare.
+
 ## Worker Slice
 
 The Worker-shaped entrypoint is `src/worker.ts`. It exports the default

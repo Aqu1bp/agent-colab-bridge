@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
+    "test": "npm run build && node --test dist/test/*.test.js test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
