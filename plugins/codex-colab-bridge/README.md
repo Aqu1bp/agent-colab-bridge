@@ -90,6 +90,17 @@ Colab runtime and anything mounted inside it:
 npm run setup:all -- --enable-dangerous-tools --smoke
 ```
 
+To change the Colab accelerator after setup, recreate the runtime. This stops
+the named Colab session, creates a fresh bridge session, bootstraps the runner
+with the requested accelerator, and writes new local MCP config:
+
+```bash
+npm run runtime:recreate -- --gpu L4 --yes --smoke
+```
+
+Use `--gpu none` for CPU. Active Colab processes and runner-owned job/log state
+are lost when the runtime is recreated.
+
 After setup writes the local MCP config, install this checkout into the Codex
 app:
 
@@ -294,6 +305,16 @@ The explicit bootstrap config can contain `base_url` or `worker_url`,
 `colab_session`, `project_root`, `runner_path`, `remote_runner_path`,
 `remote_config_path`, `gpu`, and `colab_config`. The script does not create or
 modify local user config.
+
+Changing GPU type is not a live runner setting. Use:
+
+```bash
+npm run runtime:recreate -- --gpu T4 --yes --smoke
+```
+
+The recreate command wraps the safe provisioning sequence: `google-colab-cli
+stop`, fresh bridge session creation, Colab bootstrap, local config rewrite, and
+optional MCP smoke testing.
 
 If `google-colab-cli` is not available or cannot authenticate, the fallback is a
 manual Colab notebook bootstrap:

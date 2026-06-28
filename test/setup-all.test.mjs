@@ -27,6 +27,8 @@ test("setup:all dry run plans redacted commands and writes no secrets", async ()
       "--smoke",
       "--config",
       "bridge.json",
+      "--colab-config",
+      "/tmp/colab-cli.json",
     ],
     env: {},
     cwd: "/tmp/repo",
@@ -43,6 +45,7 @@ test("setup:all dry run plans redacted commands and writes no secrets", async ()
   assert.match(text, /COLAB_MCP_BRIDGE_RUNNER_TOKEN=<runner-token-redacted>/);
   assert.match(text, /npm run smoke:mcp -- --dangerous/);
   assert.match(text, /Local MCP config: \/tmp\/repo\/bridge.json/);
+  assert.match(text, /--colab-config \/tmp\/colab-cli\.json/);
   assert.doesNotMatch(text, /admin_secret/);
   assert.doesNotMatch(text, /generated_secret/);
 });

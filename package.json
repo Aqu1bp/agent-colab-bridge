@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
+    "runtime:recreate": "node scripts/recreate-runtime.mjs",
     "setup:all": "node scripts/setup-all.mjs",
     "setup:bridge": "node scripts/setup-bridge.mjs",
     "package:plugin": "npm run build && node scripts/package-codex-plugin.mjs",
@@ -26,7 +27,7 @@
     "codex-colab-bridge-spec.md",
     "config.example.json",
     "plugins/codex-colab-bridge/",
-    "python/",
+    "python/colab_runner.py",
     "scripts/",
     "skills/",
     "src/",

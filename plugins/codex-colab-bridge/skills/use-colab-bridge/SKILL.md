@@ -18,6 +18,7 @@ Use the Codex Colab Bridge tools only for Colab runtimes the user controls. The 
 - Keep generated files under `/content/project` unless the user explicitly asks for another location.
 - Do not move datasets, checkpoints, or large logs through Cloudflare or MCP file tools. Use Google Drive, GCS, Hugging Face Hub, GitHub Releases, or `google-colab-cli upload/download`.
 - Assume Colab VM deletion loses active processes and runner-owned job/log state.
+- Do not try to change GPU type from inside the runner. Runtime settings require recreating the Colab runtime, which is destructive.
 
 ## Typical Flow
 
@@ -45,3 +46,19 @@ npm run setup:all -- --smoke
 ```
 
 Do not try to recover runner tokens from logs or chat.
+
+## Runtime Settings
+
+Changing GPU type, switching to CPU, or otherwise changing Colab runtime
+settings is a local provisioning task, not an MCP runner command. From a source
+checkout, use:
+
+```bash
+npm run runtime:recreate -- --gpu L4 --yes --smoke
+```
+
+Use `--gpu none` for CPU. This stops the named Colab session unless
+`--skip-stop` is passed, creates a fresh bridge session, bootstraps the runner,
+and rewrites the local MCP config. Confirm with the user before running it,
+because active Colab jobs, loaded models, temporary files outside durable
+storage, and runner-owned job/log state are lost.

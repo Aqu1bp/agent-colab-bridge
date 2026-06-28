@@ -139,6 +139,7 @@ export async function loadSetupAllOptions({
     colabSession: firstString(flags.colabSession, env.COLAB_MCP_BRIDGE_COLAB_SESSION),
     gpu: firstString(flags.gpu, env.COLAB_MCP_BRIDGE_GPU),
     projectRoot: firstString(flags.projectRoot, env.COLAB_MCP_BRIDGE_PROJECT_ROOT),
+    colabConfig: firstString(flags.colabConfig, env.COLAB_MCP_BRIDGE_COLAB_CONFIG),
   };
 }
 
@@ -576,6 +577,7 @@ Common flags:
   --colab-session NAME           passed to bootstrap
   --gpu T4                       passed to bootstrap
   --project-root /content/path   passed to bootstrap
+  --colab-config PATH            passed to google-colab-cli by bootstrap
   --smoke                        run MCP smoke after bootstrap
   --config PATH                  local MCP config path; default: ${defaultConfigPath()}
   --dry-run                      print redacted plan without running commands or writing files
