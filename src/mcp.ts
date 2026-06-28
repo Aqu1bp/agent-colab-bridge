@@ -1,0 +1,211 @@
+import { bridgeError, type BridgeError, type ErrorCode } from "./protocol.js";
+
+export interface ToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  annotations: ToolAnnotations;
+  enabledByDefault: boolean;
+}
+
+export interface CallToolResult<TData = unknown> {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent: {
+    ok: boolean;
+    data: TData | null;
+    error: BridgeError | null;
+  };
+  isError: boolean;
+}
+
+const emptyObjectSchema = {
+  type: "object",
+  properties: {},
+  additionalProperties: false,
+} as const;
+
+const structuredOutputSchema = {
+  type: "object",
+  required: ["ok", "data", "error"],
+  properties: {
+    ok: { type: "boolean" },
+    data: {},
+    error: {
+      anyOf: [
+        { type: "null" },
+        {
+          type: "object",
+          required: ["code", "message", "retryable"],
+          properties: {
+            code: { type: "string" },
+            message: { type: "string" },
+            retryable: { type: "boolean" },
+          },
+        },
+      ],
+    },
+  },
+} as const;
+
+export const readOnlyRemoteAnnotations: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+};
+
+export const dangerousRemoteAnnotations: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true,
+};
+
+export const toolDefinitions: ToolDefinition[] = [
+  {
+    name: "colab_status",
+    description: "Return authenticated bridge and runner status.",
+    inputSchema: emptyObjectSchema,
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_ping",
+    description: "Test-only authenticated fake runner ping.",
+    inputSchema: emptyObjectSchema,
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_run_shell",
+    description: "Disabled dangerous shell execution placeholder.",
+    inputSchema: {
+      type: "object",
+      required: ["command"],
+      properties: {
+        command: { type: "string" },
+        timeout_sec: { type: "number" },
+        max_output_bytes: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: dangerousRemoteAnnotations,
+    enabledByDefault: false,
+  },
+  {
+    name: "colab_run_python",
+    description: "Disabled dangerous Python execution placeholder.",
+    inputSchema: {
+      type: "object",
+      required: ["code"],
+      properties: {
+        code: { type: "string" },
+        timeout_sec: { type: "number" },
+        max_output_bytes: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: dangerousRemoteAnnotations,
+    enabledByDefault: false,
+  },
+  {
+    name: "colab_write_file",
+    description: "Disabled file write placeholder.",
+    inputSchema: {
+      type: "object",
+      required: ["path", "content", "mode"],
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+        mode: { enum: ["overwrite", "append", "create_new"] },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: dangerousRemoteAnnotations,
+    enabledByDefault: false,
+  },
+  {
+    name: "colab_start_job",
+    description: "Disabled background job placeholder.",
+    inputSchema: {
+      type: "object",
+      required: ["command"],
+      properties: {
+        command: { type: "string" },
+        name: { type: "string" },
+        max_log_bytes: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: dangerousRemoteAnnotations,
+    enabledByDefault: false,
+  },
+  {
+    name: "colab_interrupt_job",
+    description: "Disabled background job interrupt placeholder.",
+    inputSchema: {
+      type: "object",
+      required: ["job_id"],
+      properties: {
+        job_id: { type: "string" },
+        signal: { enum: ["SIGTERM", "SIGKILL"] },
+        kill_after_sec: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: dangerousRemoteAnnotations,
+    enabledByDefault: false,
+  },
+];
+
+export function toolByName(name: string): ToolDefinition | undefined {
+  return toolDefinitions.find((tool) => tool.name === name);
+}
+
+export function callToolSuccess<TData>(text: string, data: TData): CallToolResult<TData> {
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: {
+      ok: true,
+      data,
+      error: null,
+    },
+    isError: false,
+  };
+}
+
+export function callToolError(error: BridgeError): CallToolResult<never> {
+  return {
+    content: [{ type: "text", text: `${error.code}: ${error.message}` }],
+    structuredContent: {
+      ok: false,
+      data: null,
+      error,
+    },
+    isError: true,
+  };
+}
+
+export function disabledToolResult(
+  toolName: string,
+  code: ErrorCode = "TOOL_DISABLED",
+): CallToolResult<never> {
+  return callToolError(
+    bridgeError(code, `${toolName} is disabled by local policy in this build slice.`, false),
+  );
+}
