@@ -19,6 +19,7 @@ Use the Codex Colab Bridge tools only for Colab runtimes the user controls. The 
 - Do not move datasets, checkpoints, or large logs through Cloudflare or MCP file tools. Use Google Drive, GCS, Hugging Face Hub, GitHub Releases, or `google-colab-cli upload/download`.
 - Assume Colab VM deletion loses active processes and runner-owned job/log state.
 - Do not try to change GPU type from inside the runner. Runtime settings require recreating the Colab runtime, which is destructive.
+- Use `colab_stop_runtime` for stop-only runtime shutdowns. Set `confirm_runtime_stop` only after the user accepts that active Colab jobs and runner-owned logs are lost.
 
 ## Typical Flow
 
@@ -60,6 +61,10 @@ settings is a local provisioning task, not an MCP runner command. Use
 use `colab_recreate_runtime` with `gpu` set to `T4`, `L4`, `A100`, `H100`, or
 `none`.
 
+Use `colab_stop_runtime` when the user only wants the named Colab runtime
+stopped. Call `colab_status` afterwards; the runner should report offline once
+the Worker observes the runner WebSocket closing or heartbeat expiry.
+
 Treat that output as supported candidates from the installed Colab CLI, not a
 live capacity or account-quota guarantee. Real availability is confirmed only
 when Colab creates or recreates the runtime.
@@ -74,6 +79,7 @@ runner-owned job/log state are lost.
 
 When developing this bridge repository itself, the equivalent shell commands are
 `npm run setup:all -- --bootstrap --smoke`, `npm run runtime:options`, and
-`npm run runtime:recreate -- --gpu <GPU|none> --yes --smoke`. Agents working in
-an unrelated user project should prefer the MCP tools above instead of assuming
-the bridge repo is the current directory.
+`npm run runtime:recreate -- --gpu <GPU|none> --yes --smoke`. For stop-only,
+use `npm run runtime:stop -- --yes`. Agents working in an unrelated user
+project should prefer the MCP tools above instead of assuming the bridge repo is
+the current directory.

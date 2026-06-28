@@ -129,6 +129,24 @@ export const toolDefinitions = [
         enabledByDefault: true,
     },
     {
+        name: "colab_stop_runtime",
+        description: "Stop the named Colab runtime through google-colab-cli from the installed plugin package.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                dry_run: { type: "boolean", default: false },
+                confirm_runtime_stop: { type: "boolean", default: false },
+                colab_session: { type: "string", default: "codex-colab-bridge" },
+                colab_config: { type: "string" },
+                timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: localOperationalAnnotations,
+        enabledByDefault: true,
+    },
+    {
         name: "colab_recreate_runtime",
         description: "Stop the named Colab session, create a fresh bridge session, and bootstrap a runtime with the requested accelerator from the installed plugin package.",
         inputSchema: {

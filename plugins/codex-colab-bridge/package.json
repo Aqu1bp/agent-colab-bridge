@@ -12,6 +12,7 @@
     "runner:reconnect": "node scripts/reconnect-runner.mjs",
     "runtime:options": "node scripts/runtime-options.mjs",
     "runtime:recreate": "node scripts/recreate-runtime.mjs",
+    "runtime:stop": "node scripts/stop-runtime.mjs",
     "setup:all": "node scripts/setup-all.mjs",
     "setup:bridge": "node scripts/setup-bridge.mjs",
     "smoke:mcp": "node scripts/smoke-mcp.mjs"

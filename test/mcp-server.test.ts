@@ -139,6 +139,7 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   const reconnectRunner = result.tools.find((tool) => tool.name === "colab_reconnect_runner");
   const setupBridge = result.tools.find((tool) => tool.name === "colab_setup_bridge");
   const runtimeOptions = result.tools.find((tool) => tool.name === "colab_runtime_options");
+  const stopRuntime = result.tools.find((tool) => tool.name === "colab_stop_runtime");
   const recreateRuntime = result.tools.find((tool) => tool.name === "colab_recreate_runtime");
 
   assert.ok(runShell);
@@ -269,6 +270,20 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
     openWorldHint: true,
   });
   assert.equal("enabledByDefault" in runtimeOptions, false);
+
+  assert.ok(stopRuntime);
+  const stopSchema = stopRuntime.inputSchema as {
+    properties: Record<string, { default?: unknown; maximum?: number }>;
+  };
+  assert.equal(stopSchema.properties.timeout_sec?.default, 120);
+  assert.equal(stopSchema.properties.timeout_sec?.maximum, 300);
+  assert.deepEqual(stopRuntime.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in stopRuntime, false);
 
   assert.ok(recreateRuntime);
   assert.deepEqual((recreateRuntime.inputSchema as { required: string[] }).required, ["gpu"]);
@@ -524,6 +539,58 @@ test("colab_runtime_options runs locally without bridge config", async () => {
   assert.equal(result.isError, false);
   assert.deepEqual(data.gpu, ["T4", "L4"]);
   assert.deepEqual(payloads, [{ colabConfig: "/tmp/colab.json", timeoutSec: 30 }]);
+});
+
+test("colab_stop_runtime validates confirmation and runs locally without bridge config", async () => {
+  const payloads: unknown[] = [];
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      stopRuntime: async (payload) => {
+        payloads.push(payload);
+        return {
+          command: ["node", "scripts/stop-runtime.mjs", "--yes"],
+          stdout: "Runtime stop completed.",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 8,
+          timed_out: false,
+          truncated: false,
+          dry_run: payload.dryRun,
+        };
+      },
+    }),
+  );
+
+  const denied = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_stop_runtime",
+      arguments: {},
+    }),
+  );
+  assert.equal(denied.isError, true);
+  assert.equal(denied.structuredContent.error?.code, "INVALID_ARGUMENT");
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_stop_runtime",
+    arguments: {
+      confirm_runtime_stop: true,
+      colab_session: "named",
+      colab_config: "/tmp/colab.json",
+      timeout_sec: 45,
+    },
+  });
+  const result = callToolResult(response);
+
+  assert.equal(result.isError, false);
+  assert.deepEqual(payloads, [
+    {
+      dryRun: false,
+      confirmRuntimeStop: true,
+      colabSession: "named",
+      colabConfig: "/tmp/colab.json",
+      timeoutSec: 45,
+    },
+  ]);
 });
 
 test("colab_recreate_runtime validates confirmation and runs locally without bridge config", async () => {

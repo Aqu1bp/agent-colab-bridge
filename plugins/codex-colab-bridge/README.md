@@ -136,6 +136,14 @@ npm run runtime:recreate -- --gpu L4 --yes --smoke
 Use `--gpu none` for CPU. Active Colab processes and runner-owned job/log state
 are lost when the runtime is recreated.
 
+To stop the named Colab runtime without creating a replacement, call
+`colab_stop_runtime` with `confirm_runtime_stop: true`. Source-checkout
+developers can run:
+
+```bash
+npm run runtime:stop -- --yes
+```
+
 The plugin reads the local config written by setup.
 
 Create editable local config templates only when you want manual setup:
@@ -168,6 +176,7 @@ setup/recovery tools:
 ```text
 colab_setup_bridge
 colab_runtime_options
+colab_stop_runtime
 colab_recreate_runtime
 colab_reconnect_runner
 ```
@@ -385,6 +394,12 @@ npm run runtime:options
 The recreate command wraps the safe provisioning sequence: `google-colab-cli
 stop`, fresh bridge session creation, Colab bootstrap, local config rewrite, and
 optional MCP smoke testing.
+
+To stop the runtime without creating a replacement, use:
+
+```bash
+npm run runtime:stop -- --yes
+```
 
 If `google-colab-cli` is not available or cannot authenticate, the fallback is a
 manual Colab notebook bootstrap:

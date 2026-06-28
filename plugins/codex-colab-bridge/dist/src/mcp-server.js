@@ -11,6 +11,8 @@ const DEFAULT_RECONNECT_TIMEOUT_SEC = 60;
 const MAX_RECONNECT_TIMEOUT_SEC = 300;
 const DEFAULT_OPERATION_TIMEOUT_SEC = 900;
 const MAX_OPERATION_TIMEOUT_SEC = 1800;
+const DEFAULT_STOP_RUNTIME_TIMEOUT_SEC = 120;
+const MAX_STOP_RUNTIME_TIMEOUT_SEC = 300;
 const DEFAULT_RUNTIME_OPTIONS_TIMEOUT_SEC = 120;
 const MAX_RUNTIME_OPTIONS_TIMEOUT_SEC = 300;
 const LOCAL_COMMAND_OUTPUT_BYTES = 20 * 1024;
@@ -167,6 +169,24 @@ export class ColabMcpServer {
                 }
                 return callToolSuccess("Runtime options returned.", result);
             }
+            if (tool.name === "colab_stop_runtime") {
+                let payload;
+                try {
+                    payload = normalizeStopRuntimePayload(params.arguments);
+                }
+                catch (error) {
+                    if (isBridgeErrorLike(error)) {
+                        return callToolError(error);
+                    }
+                    throw error;
+                }
+                const result = await this.runStopRuntime(payload);
+                if (result.exit_code !== 0 || result.timed_out) {
+                    return callToolError(bridgeError("INTERNAL_ERROR", `Colab runtime stop failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`, true));
+                }
+                this.config = undefined;
+                return callToolSuccess(payload.dryRun ? "Runtime stop dry run completed." : "Runtime stop completed.", result);
+            }
             if (tool.name === "colab_recreate_runtime") {
                 let payload;
                 try {
@@ -312,6 +332,12 @@ export class ColabMcpServer {
             return this.options.runtimeOptions(payload);
         }
         return runRuntimeOptionsScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+    }
+    async runStopRuntime(payload) {
+        if (this.options.stopRuntime) {
+            return this.options.stopRuntime(payload);
+        }
+        return runStopRuntimeScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
     }
     async runRecreateRuntime(payload) {
         if (this.options.recreateRuntime) {
@@ -494,6 +520,24 @@ function normalizeRuntimeOptionsPayload(args) {
         throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_RUNTIME_OPTIONS_TIMEOUT_SEC}.`, false);
     }
     return {
+        colabConfig: optionalString(args.colab_config, "colab_config"),
+        timeoutSec,
+    };
+}
+function normalizeStopRuntimePayload(args) {
+    const dryRun = optionalBoolean(args.dry_run, "dry_run") ?? false;
+    const confirmRuntimeStop = optionalBoolean(args.confirm_runtime_stop, "confirm_runtime_stop") ?? false;
+    if (!dryRun && !confirmRuntimeStop) {
+        throw bridgeError("INVALID_ARGUMENT", "confirm_runtime_stop must be true because this stops the Colab runtime and loses active jobs.", false);
+    }
+    const timeoutSec = optionalNumber(args.timeout_sec, "timeout_sec") ?? DEFAULT_STOP_RUNTIME_TIMEOUT_SEC;
+    if (timeoutSec <= 0 || timeoutSec > MAX_STOP_RUNTIME_TIMEOUT_SEC) {
+        throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_STOP_RUNTIME_TIMEOUT_SEC}.`, false);
+    }
+    return {
+        dryRun,
+        confirmRuntimeStop,
+        colabSession: optionalString(args.colab_session, "colab_session"),
         colabConfig: optionalString(args.colab_config, "colab_config"),
         timeoutSec,
     };
@@ -691,6 +735,20 @@ async function runRuntimeOptionsScript(payload, packageRoot) {
         timed_out: result.timed_out,
         truncated: result.truncated,
     };
+}
+function runStopRuntimeScript(payload, packageRoot) {
+    const command = [
+        process.execPath,
+        "scripts/stop-runtime.mjs",
+        ...(payload.dryRun ? ["--dry-run"] : ["--yes"]),
+        ...(payload.colabSession ? ["--colab-session", payload.colabSession] : []),
+        ...(payload.colabConfig ? ["--colab-config", payload.colabConfig] : []),
+    ];
+    return runLocalCommand(command, {
+        packageRoot,
+        timeoutSec: payload.timeoutSec,
+        dryRun: payload.dryRun,
+    });
 }
 function runRecreateRuntimeScript(payload, packageRoot) {
     const command = [

@@ -34,6 +34,7 @@ await copyFile("scripts/runtime-options.mjs", "scripts/runtime-options.mjs");
 await copyFile("scripts/setup-all.mjs", "scripts/setup-all.mjs");
 await copyFile("scripts/setup-bridge.mjs", "scripts/setup-bridge.mjs");
 await copyFile("scripts/smoke-mcp.mjs", "scripts/smoke-mcp.mjs");
+await copyFile("scripts/stop-runtime.mjs", "scripts/stop-runtime.mjs");
 await writePluginWranglerConfig();
 
 const sourcePackage = JSON.parse(await readFile(resolve(repoRoot, "package.json"), "utf8"));
@@ -49,6 +50,7 @@ const pluginPackage = {
     "runner:reconnect": "node scripts/reconnect-runner.mjs",
     "runtime:options": "node scripts/runtime-options.mjs",
     "runtime:recreate": "node scripts/recreate-runtime.mjs",
+    "runtime:stop": "node scripts/stop-runtime.mjs",
     "setup:all": "node scripts/setup-all.mjs",
     "setup:bridge": "node scripts/setup-bridge.mjs",
     "smoke:mcp": "node scripts/smoke-mcp.mjs",
