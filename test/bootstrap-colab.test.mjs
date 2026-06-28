@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createCommandPlan,
   dryRunLines,
+  isUsableColabStatusResult,
   loadBootstrapOptions,
   renderRunnerEnvConfig,
   renderRunnerStartScript,
@@ -106,6 +107,27 @@ test("status hints use env references instead of token values", async () => {
   const text = statusHintLines(options).join("\n");
   assert.match(text, /\$COLAB_MCP_BRIDGE_CONTROLLER_TOKEN/);
   assert.doesNotMatch(text, /controller_secret/);
+});
+
+test("bootstrap treats google-colab-cli not-found status output as missing session", () => {
+  assert.equal(
+    isUsableColabStatusResult({
+      ok: true,
+      code: 0,
+      stdout: "[colab] Session 'codex-colab-bridge' not found.\n",
+      stderr: "",
+    }),
+    false,
+  );
+  assert.equal(
+    isUsableColabStatusResult({
+      ok: true,
+      code: 0,
+      stdout: "[codex-colab-bridge] gpu-t4 | Hardware: T4 | Variant: GPU\n",
+      stderr: "",
+    }),
+    true,
+  );
 });
 
 async function neverRead() {

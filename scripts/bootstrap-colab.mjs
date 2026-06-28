@@ -382,8 +382,8 @@ async function run(options) {
   console.log("Runner/controller token values will not be printed.");
 
   const statusStep = createCommandPlan(options)[0];
-  const hasSession = await runCommand(statusStep.command, { quiet: true });
-  if (hasSession.ok) {
+  const statusResult = await runCommand(statusStep.command, { quiet: true });
+  if (isUsableColabStatusResult(statusResult)) {
     console.log(`Reusing existing Colab session ${options.colabSessionName}.`);
   } else {
     const createStep = createCommandPlan(options)[1];
@@ -439,19 +439,39 @@ async function runRequiredStep(step) {
 
 function runCommand(command, { quiet = false } = {}) {
   return new Promise((resolvePromise) => {
+    let stdout = "";
+    let stderr = "";
     const child = spawn(command[0], command.slice(1), {
       stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit",
     });
+    if (quiet) {
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+    }
     child.on("error", (error) => {
       if (!quiet) {
         console.error(error.message);
       }
-      resolvePromise({ ok: false, code: 127 });
+      resolvePromise({ ok: false, code: 127, stdout, stderr });
     });
     child.on("close", (code) => {
-      resolvePromise({ ok: code === 0, code: code ?? 1 });
+      resolvePromise({ ok: code === 0, code: code ?? 1, stdout, stderr });
     });
   });
+}
+
+export function isUsableColabStatusResult(result) {
+  if (!result?.ok) {
+    return false;
+  }
+  const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  return !/\bsession\b[\s\S]{0,80}\bnot found\b/i.test(text);
 }
 
 async function pollBridgeStatus(options) {
