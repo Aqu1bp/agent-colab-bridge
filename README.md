@@ -74,9 +74,12 @@ still enforces project-root path and size/log limits.
   `Request`/`Response` objects.
 - HTTP routes for health, authenticated session creation, controller status,
   command creation, command result polling, revoke, and the authenticated
-  runner attach route shape `GET /v1/sessions/:session_id/runner/ws`.
+  runner WebSocket route `GET /v1/sessions/:session_id/runner/ws`.
 - A runner transport seam for Node tests, with runner attach authenticated by
   headers and session metadata updated on attach, reconnect, and restart.
+- Cloudflare Durable Object runner WebSocket handling using `WebSocketPair`,
+  accepted server sockets, serialized runner socket attachments, heartbeat
+  messages, and command/result forwarding over the runner socket.
 - MCP tool metadata and result helpers using `content[]`, `structuredContent`, `isError`, annotations, and output schemas.
 - A minimal JSON-RPC MCP server over stdio or an in-memory transport.
 - MCP `initialize`, `tools/list`, and `tools/call` support for the current safe
@@ -124,8 +127,8 @@ still enforces project-root path and size/log limits.
 
 ## Intentionally Not Implemented Yet
 
-- Real deployed Cloudflare integration tests, full WebSocket handling in Node
-  tests, and full SQLite table-backed Durable Object storage.
+- Real deployed Cloudflare integration tests, real Colab smoke tests, and full
+  SQLite table-backed Durable Object storage.
 - Durable Object-backed job/log persistence across Worker hibernation or Colab
   runner process restart. Current job/log state is owned by the connected
   runner process.

@@ -1029,10 +1029,31 @@ async def connect_and_run(
         websocket_context = websockets.connect(url, extra_headers=headers)
 
     async with websocket_context as websocket:
-        async for message in websocket:
-            envelope = json.loads(message)
-            response = await handle_command(envelope)
-            await websocket.send(json.dumps(response))
+        heartbeat_task = asyncio.create_task(send_heartbeats(websocket, session_id, runner_id))
+        try:
+            async for message in websocket:
+                envelope = json.loads(message)
+                response = await handle_command(envelope)
+                await websocket.send(json.dumps(response))
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+
+async def send_heartbeats(websocket: Any, session_id: str, runner_id: str) -> None:
+    while True:
+        await asyncio.sleep(15)
+        await websocket.send(
+            json.dumps(
+                {
+                    "protocol_version": 1,
+                    "kind": "heartbeat",
+                    "session_id": session_id,
+                    "runner_instance_id": runner_id,
+                    "sent_at": now_iso(),
+                }
+            )
+        )
 
 
 if __name__ == "__main__":

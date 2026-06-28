@@ -11,6 +11,8 @@ import worker, {
   type DurableObjectNamespaceLike,
   type DurableObjectStorageLike,
   type DurableObjectStubLike,
+  type DurableObjectStateLike,
+  type WorkerWebSocketLike,
 } from "../src/worker.js";
 
 const baseUrl = "https://worker.test";
@@ -101,6 +103,82 @@ class MemoryDurableObjectStorage implements DurableObjectStorageLike {
 
   async put<T = unknown>(key: string, value: T): Promise<void> {
     this.values.set(key, structuredClone(value));
+  }
+}
+
+class MemoryDurableObjectState implements DurableObjectStateLike {
+  readonly sockets: TestWebSocket[] = [];
+  owner?: ColabBridgeSessionDurableObject;
+
+  constructor(readonly storage: DurableObjectStorageLike) {}
+
+  acceptWebSocket(socket: WorkerWebSocketLike): void {
+    const testSocket = socket as TestWebSocket;
+    this.sockets.push(testSocket);
+    testSocket.addEventListener("message", (event) => {
+      void this.owner?.webSocketMessage(testSocket, event.data);
+    });
+    testSocket.addEventListener("close", () => {
+      void this.owner?.webSocketClose(testSocket);
+    });
+  }
+
+  getWebSockets(): WorkerWebSocketLike[] {
+    return this.sockets;
+  }
+}
+
+class TestWebSocket implements WorkerWebSocketLike {
+  peer?: TestWebSocket;
+  accepted = false;
+  closed = false;
+  private attachment: unknown;
+  private readonly listeners = new Map<string, Array<(event: { data: string }) => void>>();
+
+  send(message: string): void {
+    this.peer?.dispatch("message", { data: message });
+  }
+
+  close(): void {
+    this.closed = true;
+    this.peer?.dispatch("close", { data: "" });
+  }
+
+  accept(): void {
+    this.accepted = true;
+  }
+
+  serializeAttachment(attachment: unknown): void {
+    this.attachment = structuredClone(attachment);
+  }
+
+  deserializeAttachment(): unknown {
+    return this.attachment;
+  }
+
+  addEventListener(type: string, listener: (event: { data: string }) => void): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  private dispatch(type: string, event: { data: string }): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+}
+
+class TestWebSocketPair {
+  static lastPair: { client: TestWebSocket; server: TestWebSocket } | null = null;
+
+  constructor() {
+    const client = new TestWebSocket();
+    const server = new TestWebSocket();
+    client.peer = server;
+    server.peer = client;
+    TestWebSocketPair.lastPair = { client, server };
+    return { 0: client, 1: server };
   }
 }
 
@@ -442,6 +520,98 @@ test("Worker runner/ws route requires runner auth and authenticated attach updat
   const replayEnvelope = await readEnvelope(replay);
   assert.equal(replay.status, 401);
   assert.equal(replayEnvelope.error?.code, "REPLAY_DETECTED");
+});
+
+test("Durable Object runner WebSocket forwards commands and resolves results after restore", async () => {
+  const previousWebSocketPair = (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
+  (globalThis as { WebSocketPair?: unknown }).WebSocketPair = TestWebSocketPair;
+  try {
+    const storage = new MemoryDurableObjectStorage();
+    const state = new MemoryDurableObjectState(storage);
+    const env = { ADMIN_SECRET: adminSecret };
+    let durableObject = new ColabBridgeSessionDurableObject(state, env);
+    state.owner = durableObject;
+
+    const created = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${adminSecret}` },
+      }),
+    );
+    const session = (await readEnvelope<CreatedSession>(created)).data;
+    assert.ok(session);
+
+    const attached = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/runner/ws`, {
+        headers: {
+          ...runnerHeaders(session.runner_token, "do_runner_ws", {
+            runnerInstanceId: "runner_do_ws",
+          }),
+          Upgrade: "websocket",
+        },
+      }),
+    );
+
+    assert.equal(attached.headers.get("x-colab-bridge-test-websocket"), "accepted");
+    assert.equal(state.sockets.length, 1);
+    assert.deepEqual(state.sockets[0]?.deserializeAttachment(), {
+      side: "runner",
+      sessionId: session.session_id,
+      runnerInstanceId: "runner_do_ws",
+      kernelStartedAt: "2026-06-28T10:00:00.000Z",
+      runnerStartedAt: "2026-06-28T10:00:01.000Z",
+    });
+
+    durableObject = new ColabBridgeSessionDurableObject(state, env);
+    state.owner = durableObject;
+    const pair = TestWebSocketPair.lastPair;
+    assert.ok(pair);
+    pair.client.addEventListener("message", (event) => {
+      const command = JSON.parse(event.data) as {
+        session_id: string;
+        command_id: string;
+        message_id: string;
+        type: string;
+      };
+      pair.client.send(
+        JSON.stringify({
+          protocol_version: 1,
+          session_id: command.session_id,
+          command_id: command.command_id,
+          message_id: "msg_result",
+          reply_to: command.message_id,
+          kind: "result",
+          type: `${command.type}_result`,
+          sent_at: new Date().toISOString(),
+          ok: true,
+          payload: { ok: true, pong: true },
+        }),
+      );
+    });
+
+    const commandResponse = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+        method: "POST",
+        headers: {
+          ...controllerHeaders(session.controller_token, "do_runner_ws_ping"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ type: "ping" }),
+      }),
+    );
+    const commandEnvelope = await readEnvelope<CommandData>(commandResponse);
+
+    assert.equal(commandResponse.status, 201);
+    assert.equal(commandEnvelope.data?.state, "succeeded");
+    assert.deepEqual(commandEnvelope.data?.result_payload, { ok: true, pong: true });
+  } finally {
+    if (previousWebSocketPair === undefined) {
+      delete (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
+    } else {
+      (globalThis as { WebSocketPair?: unknown }).WebSocketPair = previousWebSocketPair;
+    }
+    TestWebSocketPair.lastPair = null;
+  }
 });
 
 test("Durable Object shape persists session and nonce state through storage", async () => {

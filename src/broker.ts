@@ -239,6 +239,46 @@ export class SessionBroker {
     this.repository.updateSession(session);
   }
 
+  recordRunnerActivity(sessionId: string, runnerInstanceId: string | null, now = new Date()): void {
+    const session = this.requireLiveSession(sessionId, now);
+    if (runnerInstanceId && session.runnerInstanceId !== runnerInstanceId) {
+      return;
+    }
+    session.runnerConnected = true;
+    session.lastHeartbeatAt = now.toISOString();
+    this.repository.updateSession(session);
+  }
+
+  restoreRunnerConnection(
+    sessionId: string,
+    metadata: RunnerMetadata,
+    handler: RunnerHandler,
+    now = new Date(),
+  ): void {
+    const session = this.requireLiveSession(sessionId, now);
+    session.runnerConnected = true;
+    session.runnerInstanceId = metadata.runnerInstanceId;
+    session.kernelStartedAt = metadata.kernelStartedAt;
+    session.runnerStartedAt = metadata.runnerStartedAt ?? session.runnerStartedAt ?? now.toISOString();
+    session.lastHeartbeatAt = now.toISOString();
+    this.repository.updateSession(session);
+    this.runners.set(sessionId, handler);
+  }
+
+  markRunnerDisconnected(sessionId: string, runnerInstanceId: string | null, now = new Date()): void {
+    const session = this.repository.getSession(sessionId);
+    if (!session || session.revokedAt || Date.parse(session.expiresAt) <= now.getTime()) {
+      return;
+    }
+    if (runnerInstanceId && session.runnerInstanceId !== runnerInstanceId) {
+      return;
+    }
+    session.runnerConnected = false;
+    session.lastHeartbeatAt = now.toISOString();
+    this.repository.updateSession(session);
+    this.runners.delete(sessionId);
+  }
+
   authenticateRunner(sessionId: string, auth: AuthAttempt, now = new Date()): void {
     this.requireRunner(sessionId, auth, now);
   }
