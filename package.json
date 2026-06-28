@@ -1,11 +1,13 @@
 {
-  "name": "colab-mcp-bridge",
+  "name": "codex-colab-bridge",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
+    "setup:all": "node scripts/setup-all.mjs",
     "setup:bridge": "node scripts/setup-bridge.mjs",
     "doctor": "node scripts/doctor.mjs",
     "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs",

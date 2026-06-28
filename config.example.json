@@ -1,0 +1,8 @@
+{
+  "base_url": "https://<worker-name>.<cloudflare-subdomain>.workers.dev",
+  "session_id": "<session-id>",
+  "controller_token": "<controller-token>",
+  "enable_dangerous_tools": false,
+  "colab_session": "<colab-session-name>",
+  "project_root": "/content/project"
+}

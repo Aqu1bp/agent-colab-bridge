@@ -122,7 +122,7 @@ test("initialize returns MCP server capabilities", async () => {
   };
   assert.equal(result.protocolVersion, "2025-11-25");
   assert.deepEqual(result.capabilities.tools, {});
-  assert.equal(result.serverInfo.name, "colab-mcp-bridge");
+  assert.equal(result.serverInfo.name, "codex-colab-bridge");
 });
 
 test("tools/list includes disabled dangerous tools with schemas and annotations", async () => {

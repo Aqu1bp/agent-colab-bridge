@@ -264,7 +264,7 @@ test("doctor collection stays offline with injected command and fetch helpers", 
   const commandCalls = [];
   const fetchCalls = [];
   const files = new Map([
-    ["/tmp/repo/package.json", JSON.stringify({ name: "colab-mcp-bridge" })],
+    ["/tmp/repo/package.json", JSON.stringify({ name: "codex-colab-bridge" })],
     ["/tmp/repo/node_modules", ""],
     [
       "/tmp/repo/config.json",

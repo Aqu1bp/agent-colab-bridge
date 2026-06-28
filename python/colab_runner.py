@@ -1,4 +1,4 @@
-"""Colab runner skeleton for the Colab MCP Bridge.
+"""Colab runner for Codex Colab Bridge.
 
 This runner connects outbound from Colab to:
 

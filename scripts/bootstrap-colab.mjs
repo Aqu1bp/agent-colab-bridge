@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 
-const DEFAULT_COLAB_SESSION_NAME = "colab-mcp-bridge";
+const DEFAULT_COLAB_SESSION_NAME = "codex-colab-bridge";
 const DEFAULT_PROJECT_ROOT = "/content/project";
 const DEFAULT_RUNNER_PATH = "python/colab_runner.py";
 const DEFAULT_REMOTE_RUNNER_NAME = "colab_runner.py";

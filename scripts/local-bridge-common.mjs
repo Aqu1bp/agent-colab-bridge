@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 
-export const DEFAULT_CONFIG_PATH = "~/.config/colab-mcp-bridge/config.json";
+export const DEFAULT_CONFIG_PATH = "~/.config/codex-colab-bridge/config.json";
 
 export function defaultConfigPath() {
   return resolvePath(DEFAULT_CONFIG_PATH);

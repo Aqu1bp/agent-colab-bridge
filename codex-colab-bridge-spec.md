@@ -1,4 +1,4 @@
-# Colab MCP Bridge Implementation Spec
+# codex-colab-bridge Implementation Spec
 
 Status: Revised after independent review
 Date: 2026-06-28
@@ -8,6 +8,9 @@ Date: 2026-06-28
 Build a Codex-to-Colab bridge that lets Codex operate a Google Colab Pro GPU runtime through MCP tools without requiring inbound network access to the Colab VM.
 
 The bridge is an authenticated remote job runner, not a general-purpose secure sandbox. Colab keeps an outbound WebSocket open to Cloudflare. Codex talks to a local MCP server on the Mac. Cloudflare coordinates the session.
+
+This project is not affiliated with Google, Google Colab, or Google's
+`colab-mcp` project.
 
 ```text
 Codex

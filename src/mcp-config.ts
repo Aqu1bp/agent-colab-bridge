@@ -2,6 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "codex-colab-bridge", "config.json");
+const LEGACY_CONFIG_PATH = join(homedir(), ".config", "colab-mcp-bridge", "config.json");
+
 export interface LocalBridgeConfig {
   baseUrl: string;
   sessionId: string;
@@ -71,14 +74,16 @@ export function loadLocalBridgeConfig(
     return parseLocalBridgeConfig(envConfig);
   }
 
+  const explicitConfigPath = options.configPath ?? env.COLAB_MCP_BRIDGE_CONFIG;
   const configPath =
-    options.configPath ??
-    env.COLAB_MCP_BRIDGE_CONFIG ??
-    join(homedir(), ".config", "colab-mcp-bridge", "config.json");
+    explicitConfigPath ??
+    (existsSync(DEFAULT_CONFIG_PATH) || !existsSync(LEGACY_CONFIG_PATH)
+      ? DEFAULT_CONFIG_PATH
+      : LEGACY_CONFIG_PATH);
 
   if (!existsSync(configPath)) {
     throw new BridgeConfigError(
-      "Missing MCP bridge config. Set COLAB_MCP_BRIDGE_BASE_URL, COLAB_MCP_BRIDGE_SESSION_ID, and COLAB_MCP_BRIDGE_CONTROLLER_TOKEN or create a local config file.",
+      `Missing MCP bridge config. Set COLAB_MCP_BRIDGE_BASE_URL, COLAB_MCP_BRIDGE_SESSION_ID, and COLAB_MCP_BRIDGE_CONTROLLER_TOKEN or create ${DEFAULT_CONFIG_PATH}.`,
     );
   }
 

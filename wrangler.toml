@@ -1,4 +1,4 @@
-name = "colab-mcp-bridge"
+name = "codex-colab-bridge"
 main = "src/worker.ts"
 compatibility_date = "2026-06-28"
 compatibility_flags = ["nodejs_compat"]

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { BrokerError, SessionBroker } from "../src/broker.js";
+import { verifyToken } from "../src/auth.js";
 import { fixedAuth } from "./helpers.js";
 
 test("invalid controller token cannot read status", () => {
@@ -39,4 +40,10 @@ test("stale auth timestamp is rejected", () => {
       }),
     (error) => error instanceof BrokerError && error.bridgeError.code === "UNAUTHORIZED",
   );
+});
+
+test("legacy token hashes remain accepted for existing sessions", () => {
+  const legacyHash = "da4608d728ed65be9258ececf328786342c4ca1128f4c016f8cf104b8a94997b";
+
+  assert.equal(verifyToken("br_legacy", legacyHash), true);
 });

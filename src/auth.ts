@@ -1,6 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { bridgeError, type BridgeError } from "./protocol.js";
 
+const TOKEN_HASH_NAMESPACE = "codex-colab-bridge";
+const LEGACY_TOKEN_HASH_NAMESPACE = "colab-mcp-bridge";
+
 export interface AuthAttempt {
   token: string;
   timestamp: string;
@@ -44,11 +47,22 @@ export function generateToken(bytes = 32): string {
 }
 
 export function hashToken(token: string): string {
-  return createHash("sha256").update(`colab-mcp-bridge:${token}`).digest("hex");
+  return hashTokenWithNamespace(TOKEN_HASH_NAMESPACE, token);
 }
 
 export function verifyToken(token: string, expectedHash: string): boolean {
-  const actual = Buffer.from(hashToken(token), "hex");
+  return (
+    verifyTokenHash(hashToken(token), expectedHash) ||
+    verifyTokenHash(hashTokenWithNamespace(LEGACY_TOKEN_HASH_NAMESPACE, token), expectedHash)
+  );
+}
+
+function hashTokenWithNamespace(namespace: string, token: string): string {
+  return createHash("sha256").update(`${namespace}:${token}`).digest("hex");
+}
+
+function verifyTokenHash(actualHash: string, expectedHash: string): boolean {
+  const actual = Buffer.from(actualHash, "hex");
   const expected = Buffer.from(expectedHash, "hex");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }

@@ -115,7 +115,7 @@ export class ColabMcpServer {
           tools: {},
         },
         serverInfo: {
-          name: "colab-mcp-bridge",
+          name: "codex-colab-bridge",
           version: "0.1.0",
         },
       };

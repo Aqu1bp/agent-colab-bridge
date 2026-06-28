@@ -159,10 +159,10 @@ async function packageCheck(packageJsonPath, { exists, readTextFile }) {
   }
   try {
     const parsed = JSON.parse(await readTextFile(packageJsonPath, "utf8"));
-    if (parsed?.name !== "colab-mcp-bridge") {
+    if (parsed?.name !== "codex-colab-bridge") {
       return warn("package.json", `Unexpected package name ${JSON.stringify(parsed?.name)}.`);
     }
-    return pass("package.json", "colab-mcp-bridge package is present.");
+    return pass("package.json", "codex-colab-bridge package is present.");
   } catch (error) {
     return fail("package.json", `package.json could not be read as JSON: ${error.message}`);
   }

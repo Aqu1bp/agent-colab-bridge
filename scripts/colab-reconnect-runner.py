@@ -2,7 +2,7 @@
 
 Run this through google-colab-cli against an existing Colab session:
 
-    uvx --from google-colab-cli colab exec -s colab-mcp-bridge -f scripts/colab-reconnect-runner.py
+    uvx --from google-colab-cli colab exec -s codex-colab-bridge -f scripts/colab-reconnect-runner.py
 
 It reads the bridge environment from the previously started runner process,
 terminates that process if it still exists, and starts a fresh runner process.
