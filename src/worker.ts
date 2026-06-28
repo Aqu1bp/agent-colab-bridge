@@ -48,6 +48,7 @@ export interface DurableObjectStateLike {
 export interface DurableObjectStorageLike {
   get<T = unknown>(key: string): Promise<T | undefined>;
   put<T = unknown>(key: string, value: T): Promise<void>;
+  delete?(key: string | string[]): Promise<void>;
 }
 
 export interface WorkerWebSocketLike {
@@ -76,6 +77,13 @@ interface WorkerBrokerStateSnapshot {
   nonces: NonceSnapshotRow[];
 }
 
+interface RowStorageIndex {
+  sessions: string[];
+  commands: string[];
+  audits: string[];
+  nonces: string[];
+}
+
 interface NonceSnapshotRow {
   sessionId: string;
   side: "controller" | "runner";
@@ -99,6 +107,11 @@ interface PendingRunnerResult {
 }
 
 const persistedStateKey = "colab_mcp_bridge_state_v1";
+const rowStoragePrefix = "colab_mcp_bridge_row_v1";
+const rowStorageIndexKey = `${rowStoragePrefix}:index`;
+const maxAuditRowsPerSession = 200;
+const maxNoncesPerSessionSide = 1_000;
+const nonceRetentionMs = 10 * 60 * 1000;
 const internalSessionIdHeader = "x-colab-bridge-session-id";
 const fallbackBrokers = new WeakMap<object, SessionBroker>();
 const fallbackBrokerKey = {};
@@ -162,8 +175,8 @@ export function getWorkerBrokerForTest(env: BridgeWorkerEnv = {}): SessionBroker
 }
 
 export class ColabBridgeSessionDurableObject {
-  private readonly repository = new SnapshotBridgeRepository();
-  private readonly nonceRepository = new SnapshotNonceRepository();
+  private readonly repository = new RowBackedBridgeRepository();
+  private readonly nonceRepository = new RowBackedNonceRepository();
   private readonly broker = new SessionBroker(this.repository, this.nonceRepository);
   private readonly pendingRunnerResults = new Map<string, PendingRunnerResult>();
   private runnerSocket: WorkerWebSocketLike | null = null;
@@ -257,18 +270,66 @@ export class ColabBridgeSessionDurableObject {
       return;
     }
 
-    const snapshot = await this.state.storage.get<WorkerBrokerStateSnapshot>(persistedStateKey);
-    if (snapshot) {
-      this.repository.hydrate(snapshot);
-      this.nonceRepository.hydrate(snapshot.nonces);
+    const loadedRows = await this.loadRowBackedState();
+    if (!loadedRows) {
+      const snapshot = await this.state.storage.get<WorkerBrokerStateSnapshot>(persistedStateKey);
+      if (snapshot) {
+        this.repository.hydrateLegacySnapshot(snapshot);
+        this.nonceRepository.hydrateLegacySnapshot(snapshot.nonces);
+      }
     }
     this.loaded = true;
   }
 
+  private async loadRowBackedState(): Promise<boolean> {
+    const index = await this.state.storage.get<RowStorageIndex>(rowStorageIndexKey);
+    if (!index || !hasIndexedRows(index)) {
+      return false;
+    }
+
+    const [sessions, commands, audits, nonces] = await Promise.all([
+      this.loadIndexedRows<SessionRow>(index.sessions),
+      this.loadIndexedRows<CommandRow>(index.commands),
+      this.loadIndexedRows<AuditRow>(index.audits),
+      this.loadIndexedRows<NonceSnapshotRow>(index.nonces),
+    ]);
+
+    this.repository.hydrateRows({
+      sessions: sessions.map((entry) => entry.row),
+      commands: commands.map((entry) => entry.row),
+      audits,
+    });
+    this.nonceRepository.hydrateRows(nonces.map((entry) => entry.row));
+    return true;
+  }
+
+  private async loadIndexedRows<T>(
+    keys: string[] = [],
+  ): Promise<Array<{ storageKey: string; row: T }>> {
+    const entries = await Promise.all(
+      keys.map(async (storageKey) => ({
+        storageKey,
+        row: await this.state.storage.get<T>(storageKey),
+      })),
+    );
+    return entries.flatMap((entry) =>
+      entry.row === undefined ? [] : [{ storageKey: entry.storageKey, row: entry.row }],
+    );
+  }
+
   private async persistState(): Promise<void> {
-    await this.state.storage.put<WorkerBrokerStateSnapshot>(persistedStateKey, {
-      ...this.repository.snapshot(),
-      nonces: this.nonceRepository.snapshot(),
+    const bridgeChanges = this.repository.drainChanges();
+    const nonceChanges = this.nonceRepository.drainChanges();
+    const putRows = [...bridgeChanges.putRows, ...nonceChanges.putRows];
+    const deleteRows = [...bridgeChanges.deleteKeys, ...nonceChanges.deleteKeys];
+
+    await Promise.all(putRows.map(([key, value]) => this.state.storage.put(key, value)));
+    if (deleteRows.length > 0 && this.state.storage.delete) {
+      await this.state.storage.delete(deleteRows);
+    }
+    await this.state.storage.put<RowStorageIndex>(rowStorageIndexKey, {
+      ...this.repository.indexKeys(),
+      nonces: this.nonceRepository.indexKeys(),
     });
   }
 
@@ -690,13 +751,16 @@ function statusForWorkerBrokerError(error: BrokerError): number {
   }
 }
 
-class SnapshotBridgeRepository implements BridgeRepository {
+class RowBackedBridgeRepository implements BridgeRepository {
   private readonly sessions = new Map<string, SessionRow>();
   private readonly commands = new Map<string, CommandRow>();
-  private audits: AuditRow[] = [];
+  private audits: Array<{ storageKey: string; row: AuditRow }> = [];
+  private readonly dirtyRows = new Map<string, unknown>();
+  private readonly deletedKeys = new Set<string>();
+  private auditSequence = 0;
 
   insertSession(session: SessionRow): void {
-    this.sessions.set(session.sessionId, structuredClone(session));
+    this.setSession(session, true);
   }
 
   getSession(sessionId: string): SessionRow | undefined {
@@ -705,11 +769,11 @@ class SnapshotBridgeRepository implements BridgeRepository {
   }
 
   updateSession(session: SessionRow): void {
-    this.sessions.set(session.sessionId, structuredClone(session));
+    this.setSession(session, true);
   }
 
   insertCommand(command: CommandRow): void {
-    this.commands.set(this.commandKey(command.sessionId, command.commandId), structuredClone(command));
+    this.setCommand(command, true);
   }
 
   getCommand(sessionId: string, commandId: string): CommandRow | undefined {
@@ -718,37 +782,134 @@ class SnapshotBridgeRepository implements BridgeRepository {
   }
 
   updateCommand(command: CommandRow): void {
-    this.commands.set(this.commandKey(command.sessionId, command.commandId), structuredClone(command));
+    this.setCommand(command, true);
   }
 
   insertAudit(row: AuditRow): void {
-    this.audits.push(structuredClone(row));
+    const stored = {
+      storageKey: auditRowStorageKey(row.sessionId, row.at, this.auditSequence++),
+      row: structuredClone(row),
+    };
+    this.audits.push(stored);
+    this.markDirty(stored.storageKey, stored.row);
+    this.compactAuditRows(row.sessionId);
   }
 
   listAudit(sessionId: string): AuditRow[] {
-    return this.audits.filter((row) => row.sessionId === sessionId).map((row) => structuredClone(row));
+    return this.audits
+      .filter((entry) => entry.row.sessionId === sessionId)
+      .map((entry) => structuredClone(entry.row));
   }
 
-  snapshot(): Omit<WorkerBrokerStateSnapshot, "nonces"> {
-    return {
-      sessions: [...this.sessions.values()].map((row) => structuredClone(row)),
-      commands: [...this.commands.values()].map((row) => structuredClone(row)),
-      audits: this.audits.map((row) => structuredClone(row)),
-    };
-  }
-
-  hydrate(snapshot: Omit<WorkerBrokerStateSnapshot, "nonces">): void {
+  hydrateRows(input: {
+    sessions: SessionRow[];
+    commands: CommandRow[];
+    audits: Array<{ storageKey: string; row: AuditRow }>;
+  }): void {
     this.sessions.clear();
     this.commands.clear();
     this.audits = [];
+    this.dirtyRows.clear();
+    this.deletedKeys.clear();
+    this.auditSequence = 0;
+
+    for (const session of input.sessions) {
+      this.setSession(session, false);
+    }
+    for (const command of input.commands) {
+      this.setCommand(command, false);
+    }
+    for (const audit of input.audits) {
+      this.audits.push({
+        storageKey: audit.storageKey,
+        row: structuredClone(audit.row),
+      });
+      this.auditSequence++;
+    }
+  }
+
+  hydrateLegacySnapshot(snapshot: Omit<WorkerBrokerStateSnapshot, "nonces">): void {
+    this.sessions.clear();
+    this.commands.clear();
+    this.audits = [];
+    this.dirtyRows.clear();
+    this.deletedKeys.clear();
+    this.auditSequence = 0;
 
     for (const session of snapshot.sessions ?? []) {
-      this.sessions.set(session.sessionId, structuredClone(session));
+      this.setSession(session, true);
     }
     for (const command of snapshot.commands ?? []) {
-      this.commands.set(this.commandKey(command.sessionId, command.commandId), structuredClone(command));
+      this.setCommand(command, true);
     }
-    this.audits = (snapshot.audits ?? []).map((row) => structuredClone(row));
+    for (const audit of snapshot.audits ?? []) {
+      const stored = {
+        storageKey: auditRowStorageKey(audit.sessionId, audit.at, this.auditSequence++),
+        row: structuredClone(audit),
+      };
+      this.audits.push(stored);
+      this.markDirty(stored.storageKey, stored.row);
+      this.compactAuditRows(audit.sessionId);
+    }
+  }
+
+  indexKeys(): Pick<RowStorageIndex, "sessions" | "commands" | "audits"> {
+    return {
+      sessions: [...this.sessions.keys()].map((sessionId) => sessionRowStorageKey(sessionId)),
+      commands: [...this.commands.values()].map((command) =>
+        commandRowStorageKey(command.sessionId, command.commandId),
+      ),
+      audits: this.audits.map((entry) => entry.storageKey),
+    };
+  }
+
+  drainChanges(): { putRows: Array<[string, unknown]>; deleteKeys: string[] } {
+    const changes = {
+      putRows: [...this.dirtyRows.entries()],
+      deleteKeys: [...this.deletedKeys],
+    };
+    this.dirtyRows.clear();
+    this.deletedKeys.clear();
+    return changes;
+  }
+
+  private setSession(session: SessionRow, dirty: boolean): void {
+    const row = structuredClone(session);
+    this.sessions.set(row.sessionId, row);
+    if (dirty) {
+      this.markDirty(sessionRowStorageKey(row.sessionId), row);
+    }
+  }
+
+  private setCommand(command: CommandRow, dirty: boolean): void {
+    const row = structuredClone(command);
+    this.commands.set(this.commandKey(row.sessionId, row.commandId), row);
+    if (dirty) {
+      this.markDirty(commandRowStorageKey(row.sessionId, row.commandId), row);
+    }
+  }
+
+  private markDirty(storageKey: string, row: unknown): void {
+    this.deletedKeys.delete(storageKey);
+    this.dirtyRows.set(storageKey, structuredClone(row));
+  }
+
+  private compactAuditRows(sessionId: string): void {
+    const sessionRows = this.audits.filter((entry) => entry.row.sessionId === sessionId);
+    if (sessionRows.length <= maxAuditRowsPerSession) {
+      return;
+    }
+
+    const deleteCount = sessionRows.length - maxAuditRowsPerSession;
+    const deleteKeys = new Set(sessionRows.slice(0, deleteCount).map((entry) => entry.storageKey));
+    this.audits = this.audits.filter((entry) => {
+      if (!deleteKeys.has(entry.storageKey)) {
+        return true;
+      }
+      this.dirtyRows.delete(entry.storageKey);
+      this.deletedKeys.add(entry.storageKey);
+      return false;
+    });
   }
 
   private commandKey(sessionId: string, commandId: string): string {
@@ -756,8 +917,10 @@ class SnapshotBridgeRepository implements BridgeRepository {
   }
 }
 
-class SnapshotNonceRepository implements NonceRepository {
+class RowBackedNonceRepository implements NonceRepository {
   private rows = new Map<string, NonceSnapshotRow>();
+  private readonly dirtyRows = new Map<string, unknown>();
+  private readonly deletedKeys = new Set<string>();
 
   hasNonce(sessionId: string, side: "controller" | "runner", nonce: string): boolean {
     return this.rows.has(this.key(sessionId, side, nonce));
@@ -769,21 +932,126 @@ class SnapshotNonceRepository implements NonceRepository {
     nonce: string,
     seenAt: string,
   ): void {
-    this.rows.set(this.key(sessionId, side, nonce), { sessionId, side, nonce, seenAt });
+    const row = { sessionId, side, nonce, seenAt };
+    this.setNonce(row, true);
+    this.compactNonceRows(sessionId, side, seenAt);
   }
 
-  snapshot(): NonceSnapshotRow[] {
-    return [...this.rows.values()].map((row) => structuredClone(row));
-  }
-
-  hydrate(rows: NonceSnapshotRow[] = []): void {
+  hydrateRows(rows: NonceSnapshotRow[] = []): void {
     this.rows.clear();
+    this.dirtyRows.clear();
+    this.deletedKeys.clear();
     for (const row of rows) {
-      this.rows.set(this.key(row.sessionId, row.side, row.nonce), structuredClone(row));
+      this.setNonce(row, false);
+    }
+  }
+
+  hydrateLegacySnapshot(rows: NonceSnapshotRow[] = []): void {
+    this.rows.clear();
+    this.dirtyRows.clear();
+    this.deletedKeys.clear();
+    for (const row of rows) {
+      this.setNonce(row, true);
+      this.compactNonceRows(row.sessionId, row.side, row.seenAt);
+    }
+  }
+
+  indexKeys(): string[] {
+    return [...this.rows.values()].map((row) => nonceRowStorageKey(row.sessionId, row.side, row.nonce));
+  }
+
+  drainChanges(): { putRows: Array<[string, unknown]>; deleteKeys: string[] } {
+    const changes = {
+      putRows: [...this.dirtyRows.entries()],
+      deleteKeys: [...this.deletedKeys],
+    };
+    this.dirtyRows.clear();
+    this.deletedKeys.clear();
+    return changes;
+  }
+
+  private setNonce(row: NonceSnapshotRow, dirty: boolean): void {
+    const cloned = structuredClone(row);
+    this.rows.set(this.key(cloned.sessionId, cloned.side, cloned.nonce), cloned);
+    if (dirty) {
+      const storageKey = nonceRowStorageKey(cloned.sessionId, cloned.side, cloned.nonce);
+      this.deletedKeys.delete(storageKey);
+      this.dirtyRows.set(storageKey, cloned);
+    }
+  }
+
+  private compactNonceRows(
+    sessionId: string,
+    side: "controller" | "runner",
+    referenceSeenAt: string,
+  ): void {
+    const referenceTime = Date.parse(referenceSeenAt);
+    const rows = [...this.rows.values()]
+      .filter((row) => row.sessionId === sessionId && row.side === side)
+      .sort((left, right) => Date.parse(left.seenAt) - Date.parse(right.seenAt));
+
+    const deleteKeys = new Set<string>();
+    if (Number.isFinite(referenceTime)) {
+      const cutoff = referenceTime - nonceRetentionMs;
+      for (const row of rows) {
+        const seenAt = Date.parse(row.seenAt);
+        if (Number.isFinite(seenAt) && seenAt < cutoff) {
+          deleteKeys.add(this.key(row.sessionId, row.side, row.nonce));
+        }
+      }
+    }
+
+    const remainingRows = rows.filter((row) => !deleteKeys.has(this.key(row.sessionId, row.side, row.nonce)));
+    for (const row of remainingRows.slice(0, Math.max(0, remainingRows.length - maxNoncesPerSessionSide))) {
+      deleteKeys.add(this.key(row.sessionId, row.side, row.nonce));
+    }
+
+    for (const key of deleteKeys) {
+      const row = this.rows.get(key);
+      if (!row) {
+        continue;
+      }
+      const storageKey = nonceRowStorageKey(row.sessionId, row.side, row.nonce);
+      this.rows.delete(key);
+      this.dirtyRows.delete(storageKey);
+      this.deletedKeys.add(storageKey);
     }
   }
 
   private key(sessionId: string, side: "controller" | "runner", nonce: string): string {
     return `${sessionId}:${side}:${nonce}`;
   }
+}
+
+function hasIndexedRows(index: RowStorageIndex): boolean {
+  return (
+    index.sessions.length > 0 ||
+    index.commands.length > 0 ||
+    index.audits.length > 0 ||
+    index.nonces.length > 0
+  );
+}
+
+function sessionRowStorageKey(sessionId: string): string {
+  return `${rowStoragePrefix}:session:${encodeStorageKeyPart(sessionId)}`;
+}
+
+function commandRowStorageKey(sessionId: string, commandId: string): string {
+  return `${rowStoragePrefix}:command:${encodeStorageKeyPart(sessionId)}:${encodeStorageKeyPart(commandId)}`;
+}
+
+function auditRowStorageKey(sessionId: string, at: string, sequence: number): string {
+  return `${rowStoragePrefix}:audit:${encodeStorageKeyPart(sessionId)}:${encodeStorageKeyPart(at)}:${sequence}`;
+}
+
+function nonceRowStorageKey(
+  sessionId: string,
+  side: "controller" | "runner",
+  nonce: string,
+): string {
+  return `${rowStoragePrefix}:nonce:${encodeStorageKeyPart(sessionId)}:${side}:${encodeStorageKeyPart(nonce)}`;
+}
+
+function encodeStorageKeyPart(value: string): string {
+  return encodeURIComponent(value);
 }

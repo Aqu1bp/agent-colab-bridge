@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { hashToken } from "../src/auth.js";
 import { attachFakeRunnerForTest } from "../src/http.js";
 import { InMemoryRunnerTransport } from "../src/runner-connection.js";
 import worker, {
@@ -103,6 +104,12 @@ class MemoryDurableObjectStorage implements DurableObjectStorageLike {
 
   async put<T = unknown>(key: string, value: T): Promise<void> {
     this.values.set(key, structuredClone(value));
+  }
+
+  async delete(key: string | string[]): Promise<void> {
+    for (const item of Array.isArray(key) ? key : [key]) {
+      this.values.delete(item);
+    }
   }
 }
 
@@ -604,6 +611,26 @@ test("Durable Object runner WebSocket forwards commands and resolves results aft
     assert.equal(commandResponse.status, 201);
     assert.equal(commandEnvelope.data?.state, "succeeded");
     assert.deepEqual(commandEnvelope.data?.result_payload, { ok: true, pong: true });
+
+    durableObject = new ColabBridgeSessionDurableObject(state, env);
+    state.owner = durableObject;
+    const polledAfterReconstruction = await durableObject.fetch(
+      new Request(
+        `${baseUrl}/v1/sessions/${session.session_id}/commands/${commandEnvelope.data?.command_id}`,
+        {
+          headers: controllerHeaders(session.controller_token, "do_runner_ws_poll_after_reconstruct"),
+        },
+      ),
+    );
+    const pollEnvelope = await readEnvelope<CommandData>(polledAfterReconstruction);
+
+    assert.equal(polledAfterReconstruction.status, 200);
+    assert.equal(pollEnvelope.data?.state, "succeeded");
+    assert.deepEqual(pollEnvelope.data?.result_payload, { ok: true, pong: true });
+    assert.equal(
+      [...storage.values.keys()].some((key) => key.startsWith("colab_mcp_bridge_row_v1:command:")),
+      true,
+    );
   } finally {
     if (previousWebSocketPair === undefined) {
       delete (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
@@ -654,4 +681,112 @@ test("Durable Object shape persists session and nonce state through storage", as
   const freshEnvelope = await readEnvelope<{ runner_connected: boolean }>(freshStatus);
   assert.equal(freshStatus.status, 200);
   assert.equal(freshEnvelope.data?.runner_connected, false);
+  assert.equal(storage.values.has("colab_mcp_bridge_state_v1"), false);
+  assert.equal(storage.values.has("colab_mcp_bridge_row_v1:index"), true);
+  assert.equal(
+    [...storage.values.keys()].some((key) => key.startsWith("colab_mcp_bridge_row_v1:session:")),
+    true,
+  );
+  assert.equal(
+    [...storage.values.keys()].some((key) => key.startsWith("colab_mcp_bridge_row_v1:nonce:")),
+    true,
+  );
+});
+
+test("Durable Object migrates legacy snapshot state into row storage", async () => {
+  const env = { ADMIN_SECRET: adminSecret };
+  const storage = new MemoryDurableObjectStorage();
+  const sessionId = "sess_legacy_snapshot";
+  const controllerToken = "br_legacy_controller";
+  const runnerToken = "br_legacy_runner";
+  const now = new Date().toISOString();
+
+  await storage.put("colab_mcp_bridge_state_v1", {
+    sessions: [
+      {
+        sessionId,
+        controllerTokenHash: hashToken(controllerToken),
+        runnerTokenHash: hashToken(runnerToken),
+        createdAt: now,
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        revokedAt: null,
+        runnerConnected: false,
+        runnerInstanceId: null,
+        kernelStartedAt: null,
+        runnerStartedAt: null,
+        lastHeartbeatAt: null,
+      },
+    ],
+    commands: [
+      {
+        sessionId,
+        commandId: "cmd_legacy_done",
+        type: "ping",
+        state: "succeeded",
+        requestPayload: {},
+        requestPayloadHash: "legacy_hash",
+        resultPayload: { ok: true, migrated: true },
+        error: null,
+        deadlineAt: "2999-01-01T00:00:00.000Z",
+        createdAt: now,
+        updatedAt: now,
+        runnerInstanceId: "runner_legacy",
+        stateHistory: ["accepted", "queued", "sent_to_runner", "running", "succeeded"],
+      },
+    ],
+    audits: [
+      {
+        sessionId,
+        at: now,
+        event: "session_create",
+        callerSide: "system",
+        outcome: "accepted",
+      },
+    ],
+    nonces: [
+      {
+        sessionId,
+        side: "controller",
+        nonce: "legacy_used_nonce",
+        seenAt: now,
+      },
+    ],
+  });
+
+  const durableObject = new ColabBridgeSessionDurableObject({ storage }, env);
+  const status = await durableObject.fetch(
+    new Request(`${baseUrl}/v1/sessions/${sessionId}/status`, {
+      headers: controllerHeaders(controllerToken, "legacy_fresh_nonce"),
+    }),
+  );
+  const statusEnvelope = await readEnvelope<{ runner_connected: boolean }>(status);
+
+  assert.equal(status.status, 200);
+  assert.equal(statusEnvelope.data?.runner_connected, false);
+  assert.equal(storage.values.has("colab_mcp_bridge_row_v1:index"), true);
+  assert.equal(
+    [...storage.values.keys()].some((key) => key.startsWith("colab_mcp_bridge_row_v1:command:")),
+    true,
+  );
+
+  const reconstructedObject = new ColabBridgeSessionDurableObject({ storage }, env);
+  const legacyCommand = await reconstructedObject.fetch(
+    new Request(`${baseUrl}/v1/sessions/${sessionId}/commands/cmd_legacy_done`, {
+      headers: controllerHeaders(controllerToken, "legacy_poll_nonce"),
+    }),
+  );
+  const commandEnvelope = await readEnvelope<CommandData>(legacyCommand);
+
+  assert.equal(legacyCommand.status, 200);
+  assert.equal(commandEnvelope.data?.state, "succeeded");
+  assert.deepEqual(commandEnvelope.data?.result_payload, { ok: true, migrated: true });
+
+  const replay = await reconstructedObject.fetch(
+    new Request(`${baseUrl}/v1/sessions/${sessionId}/status`, {
+      headers: controllerHeaders(controllerToken, "legacy_used_nonce"),
+    }),
+  );
+  const replayEnvelope = await readEnvelope(replay);
+  assert.equal(replay.status, 401);
+  assert.equal(replayEnvelope.error?.code, "REPLAY_DETECTED");
 });
