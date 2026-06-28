@@ -1,0 +1,14 @@
+name = "codex-colab-bridge"
+main = "dist/src/worker.js"
+compatibility_date = "2026-06-28"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
+
+[[durable_objects.bindings]]
+name = "COLAB_BRIDGE_SESSIONS"
+class_name = "ColabBridgeSessionDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ColabBridgeSessionDurableObject"]

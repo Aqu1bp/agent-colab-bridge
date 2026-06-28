@@ -14,11 +14,24 @@ test("Codex marketplace plugin payload is a real packaged directory", async () =
   assert.equal(existsSync(resolve(pluginRoot, "dist", "src", "mcp-server.js")), true);
   assert.equal(existsSync(resolve(pluginRoot, "scripts", "mcp-entry.mjs")), true);
   assert.equal(existsSync(resolve(pluginRoot, "scripts", "local-bridge-common.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "setup-all.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "setup-bridge.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "bootstrap-colab.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "runtime-options.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "recreate-runtime.mjs")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "scripts", "smoke-mcp.mjs")), true);
   assert.equal(existsSync(resolve(pluginRoot, "scripts", "reconnect-runner.mjs")), true);
   assert.equal(existsSync(resolve(pluginRoot, "scripts", "colab-reconnect-runner.py")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "python", "colab_runner.py")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "wrangler.toml")), true);
 
   const packageJson = JSON.parse(await readFile(resolve(pluginRoot, "package.json"), "utf8"));
+  assert.equal(packageJson.scripts?.["setup:all"], "node scripts/setup-all.mjs");
+  assert.equal(packageJson.scripts?.["smoke:mcp"], "node scripts/smoke-mcp.mjs");
   assert.equal(packageJson.scripts?.["runner:reconnect"], "node scripts/reconnect-runner.mjs");
+
+  const wranglerToml = await readFile(resolve(pluginRoot, "wrangler.toml"), "utf8");
+  assert.match(wranglerToml, /^main = "dist\/src\/worker\.js"$/m);
 
   const entries = await readdir(pluginRoot);
   assert.equal(entries.includes(".git"), false);

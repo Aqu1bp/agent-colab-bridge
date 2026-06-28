@@ -137,6 +137,9 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   const tailJob = result.tools.find((tool) => tool.name === "colab_tail_job");
   const interruptJob = result.tools.find((tool) => tool.name === "colab_interrupt_job");
   const reconnectRunner = result.tools.find((tool) => tool.name === "colab_reconnect_runner");
+  const setupBridge = result.tools.find((tool) => tool.name === "colab_setup_bridge");
+  const runtimeOptions = result.tools.find((tool) => tool.name === "colab_runtime_options");
+  const recreateRuntime = result.tools.find((tool) => tool.name === "colab_recreate_runtime");
 
   assert.ok(runShell);
   assert.equal(typeof runShell.description, "string");
@@ -242,6 +245,40 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
     openWorldHint: true,
   });
   assert.equal("enabledByDefault" in reconnectRunner, false);
+
+  assert.ok(setupBridge);
+  const setupSchema = setupBridge.inputSchema as {
+    properties: Record<string, { default?: unknown; maximum?: number }>;
+  };
+  assert.equal(setupSchema.properties.bootstrap?.default, true);
+  assert.equal(setupSchema.properties.smoke?.default, true);
+  assert.equal(setupSchema.properties.timeout_sec?.maximum, 1800);
+  assert.deepEqual(setupBridge.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in setupBridge, false);
+
+  assert.ok(runtimeOptions);
+  assert.deepEqual(runtimeOptions.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in runtimeOptions, false);
+
+  assert.ok(recreateRuntime);
+  assert.deepEqual((recreateRuntime.inputSchema as { required: string[] }).required, ["gpu"]);
+  assert.deepEqual(recreateRuntime.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in recreateRuntime, false);
 });
 
 test("colab_status calls the local HTTP handler and returns MCP CallToolResult shape", async () => {
@@ -388,6 +425,166 @@ test("colab_reconnect_runner validates arguments before running locally", async 
 
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.error?.code, "INVALID_ARGUMENT");
+});
+
+test("colab_setup_bridge runs packaged setup without bridge config and requires explicit confirmation", async () => {
+  const payloads: unknown[] = [];
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      setupBridge: async (payload) => {
+        payloads.push(payload);
+        return {
+          command: ["node", "scripts/setup-all.mjs", "--admin-secret", "<redacted>"],
+          stdout: "Bridge setup completed.",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 10,
+          timed_out: false,
+          truncated: false,
+          dry_run: payload.dryRun,
+        };
+      },
+    }),
+  );
+
+  const denied = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_setup_bridge",
+      arguments: {},
+    }),
+  );
+  assert.equal(denied.isError, true);
+  assert.equal(denied.structuredContent.error?.code, "INVALID_ARGUMENT");
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_setup_bridge",
+    arguments: {
+      confirm_remote_code_execution: true,
+      admin_secret: "secret-value",
+      enable_dangerous_tools: true,
+      gpu: "L4",
+      colab_session: "agent-session",
+      timeout_sec: 120,
+    },
+  });
+  const result = callToolResult(response);
+
+  assert.equal(result.isError, false);
+  assert.deepEqual(payloads, [
+    {
+      dryRun: false,
+      confirmRemoteCodeExecution: true,
+      baseUrl: undefined,
+      adminSecret: "secret-value",
+      enableDangerousTools: true,
+      bootstrap: true,
+      smoke: true,
+      gpu: "L4",
+      colabSession: "agent-session",
+      projectRoot: undefined,
+      colabConfig: undefined,
+      configPath: undefined,
+      timeoutSec: 120,
+    },
+  ]);
+});
+
+test("colab_runtime_options runs locally without bridge config", async () => {
+  const payloads: unknown[] = [];
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      runtimeOptions: async (payload) => {
+        payloads.push(payload);
+        return {
+          source: "test",
+          command: ["uvx", "--from", "google-colab-cli", "colab", "new", "--help"],
+          availability: "test candidates",
+          cpu: true,
+          gpu: ["T4", "L4"],
+          tpu: [],
+          warnings: [],
+          stdout: "{}",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 3,
+          timed_out: false,
+          truncated: false,
+        };
+      },
+    }),
+  );
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_runtime_options",
+    arguments: { colab_config: "/tmp/colab.json", timeout_sec: 30 },
+  });
+  const result = callToolResult(response);
+  const data = result.structuredContent.data as { gpu: string[] };
+
+  assert.equal(result.isError, false);
+  assert.deepEqual(data.gpu, ["T4", "L4"]);
+  assert.deepEqual(payloads, [{ colabConfig: "/tmp/colab.json", timeoutSec: 30 }]);
+});
+
+test("colab_recreate_runtime validates confirmation and runs locally without bridge config", async () => {
+  const payloads: unknown[] = [];
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      recreateRuntime: async (payload) => {
+        payloads.push(payload);
+        return {
+          command: ["node", "scripts/recreate-runtime.mjs", "--gpu", payload.gpu],
+          stdout: "Runtime recreation completed.",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 12,
+          timed_out: false,
+          truncated: false,
+          dry_run: payload.dryRun,
+        };
+      },
+    }),
+  );
+
+  const denied = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_recreate_runtime",
+      arguments: { gpu: "T4" },
+    }),
+  );
+  assert.equal(denied.isError, true);
+  assert.equal(denied.structuredContent.error?.code, "INVALID_ARGUMENT");
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_recreate_runtime",
+    arguments: {
+      gpu: "none",
+      confirm_runtime_recreation: true,
+      skip_stop: true,
+      enable_dangerous_tools: false,
+      timeout_sec: 240,
+    },
+  });
+  const result = callToolResult(response);
+
+  assert.equal(result.isError, false);
+  assert.deepEqual(payloads, [
+    {
+      gpu: "none",
+      dryRun: false,
+      confirmRuntimeRecreation: true,
+      skipStop: true,
+      smoke: true,
+      enableDangerousTools: false,
+      colabSession: undefined,
+      projectRoot: undefined,
+      colabConfig: undefined,
+      configPath: undefined,
+      baseUrl: undefined,
+      adminSecret: undefined,
+      timeoutSec: 240,
+    },
+  ]);
 });
 
 test("duplicate MCP calls generate fresh HTTP nonce values", async () => {

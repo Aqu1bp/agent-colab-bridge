@@ -71,6 +71,9 @@ export interface ColabMcpServerOptions {
   httpClientOptions?: Omit<BridgeHttpClientOptions, "handler">;
   packageRoot?: string;
   reconnectRunner?: (payload: ReconnectRunnerPayload) => Promise<ReconnectRunnerResultPayload>;
+  setupBridge?: (payload: SetupBridgePayload) => Promise<LocalCommandResultPayload>;
+  runtimeOptions?: (payload: RuntimeOptionsPayload) => Promise<RuntimeOptionsResultPayload>;
+  recreateRuntime?: (payload: RecreateRuntimePayload) => Promise<LocalCommandResultPayload>;
 }
 
 export interface ReconnectRunnerPayload {
@@ -92,8 +95,76 @@ export interface ReconnectRunnerResultPayload {
   dry_run: boolean;
 }
 
+export interface SetupBridgePayload {
+  dryRun: boolean;
+  confirmRemoteCodeExecution: boolean;
+  baseUrl?: string;
+  adminSecret?: string;
+  enableDangerousTools: boolean;
+  bootstrap: boolean;
+  smoke: boolean;
+  gpu?: string;
+  colabSession?: string;
+  projectRoot?: string;
+  colabConfig?: string;
+  configPath?: string;
+  timeoutSec: number;
+}
+
+export interface RuntimeOptionsPayload {
+  colabConfig?: string;
+  timeoutSec: number;
+}
+
+export interface RuntimeOptionsResultPayload {
+  source?: string;
+  command?: string[];
+  availability?: string;
+  cpu?: boolean;
+  gpu?: string[];
+  tpu?: string[];
+  warnings?: string[];
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  duration_ms: number;
+  timed_out: boolean;
+  truncated: boolean;
+}
+
+export interface RecreateRuntimePayload {
+  gpu: string;
+  dryRun: boolean;
+  confirmRuntimeRecreation: boolean;
+  skipStop: boolean;
+  smoke: boolean;
+  enableDangerousTools?: boolean;
+  colabSession?: string;
+  projectRoot?: string;
+  colabConfig?: string;
+  configPath?: string;
+  baseUrl?: string;
+  adminSecret?: string;
+  timeoutSec: number;
+}
+
+export interface LocalCommandResultPayload {
+  command: string[];
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  duration_ms: number;
+  timed_out: boolean;
+  truncated: boolean;
+  dry_run: boolean;
+}
+
 const DEFAULT_RECONNECT_TIMEOUT_SEC = 60;
 const MAX_RECONNECT_TIMEOUT_SEC = 300;
+const DEFAULT_OPERATION_TIMEOUT_SEC = 900;
+const MAX_OPERATION_TIMEOUT_SEC = 1800;
+const DEFAULT_RUNTIME_OPTIONS_TIMEOUT_SEC = 120;
+const MAX_RUNTIME_OPTIONS_TIMEOUT_SEC = 300;
 const LOCAL_COMMAND_OUTPUT_BYTES = 20 * 1024;
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -249,6 +320,89 @@ export class ColabMcpServer {
         );
       }
 
+      if (tool.name === "colab_setup_bridge") {
+        let payload: SetupBridgePayload;
+        try {
+          payload = normalizeSetupBridgePayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const result = await this.runSetupBridge(payload);
+        if (result.exit_code !== 0 || result.timed_out) {
+          return callToolError(
+            bridgeError(
+              "INTERNAL_ERROR",
+              `Bridge setup failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`,
+              true,
+            ),
+          );
+        }
+
+        this.config = undefined;
+        return callToolSuccess(
+          payload.dryRun ? "Bridge setup dry run completed." : "Bridge setup completed.",
+          result,
+        );
+      }
+
+      if (tool.name === "colab_runtime_options") {
+        let payload: RuntimeOptionsPayload;
+        try {
+          payload = normalizeRuntimeOptionsPayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const result = await this.runRuntimeOptions(payload);
+        if (result.exit_code !== 0 || result.timed_out) {
+          return callToolError(
+            bridgeError(
+              "INTERNAL_ERROR",
+              `Colab runtime options check failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`,
+              true,
+            ),
+          );
+        }
+
+        return callToolSuccess("Runtime options returned.", result);
+      }
+
+      if (tool.name === "colab_recreate_runtime") {
+        let payload: RecreateRuntimePayload;
+        try {
+          payload = normalizeRecreateRuntimePayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const result = await this.runRecreateRuntime(payload);
+        if (result.exit_code !== 0 || result.timed_out) {
+          return callToolError(
+            bridgeError(
+              "INTERNAL_ERROR",
+              `Colab runtime recreation failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`,
+              true,
+            ),
+          );
+        }
+
+        this.config = undefined;
+        return callToolSuccess(
+          payload.dryRun ? "Runtime recreation dry run completed." : "Runtime recreation completed.",
+          result,
+        );
+      }
+
       if (tool.name === "colab_run_shell" || tool.name === "colab_run_python") {
         let payload: RunShellPayload | RunPythonPayload;
         try {
@@ -392,6 +546,30 @@ export class ColabMcpServer {
     }
 
     return runReconnectRunnerScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
+  private async runSetupBridge(payload: SetupBridgePayload): Promise<LocalCommandResultPayload> {
+    if (this.options.setupBridge) {
+      return this.options.setupBridge(payload);
+    }
+
+    return runSetupBridgeScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
+  private async runRuntimeOptions(payload: RuntimeOptionsPayload): Promise<RuntimeOptionsResultPayload> {
+    if (this.options.runtimeOptions) {
+      return this.options.runtimeOptions(payload);
+    }
+
+    return runRuntimeOptionsScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
+  private async runRecreateRuntime(payload: RecreateRuntimePayload): Promise<LocalCommandResultPayload> {
+    if (this.options.recreateRuntime) {
+      return this.options.recreateRuntime(payload);
+    }
+
+    return runRecreateRuntimeScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
   }
 
   private resolveConfig(): LocalBridgeConfig {
@@ -574,6 +752,90 @@ function normalizeReconnectRunnerPayload(args: Record<string, unknown>): Reconne
   };
 }
 
+function normalizeSetupBridgePayload(args: Record<string, unknown>): SetupBridgePayload {
+  const dryRun = optionalBoolean(args.dry_run, "dry_run") ?? false;
+  const confirmRemoteCodeExecution =
+    optionalBoolean(args.confirm_remote_code_execution, "confirm_remote_code_execution") ?? false;
+  if (!dryRun && !confirmRemoteCodeExecution) {
+    throw bridgeError(
+      "INVALID_ARGUMENT",
+      "confirm_remote_code_execution must be true for live setup because this enables remote code execution inside Colab.",
+      false,
+    );
+  }
+
+  const timeoutSec = normalizeOperationTimeout(args.timeout_sec, MAX_OPERATION_TIMEOUT_SEC);
+  return {
+    dryRun,
+    confirmRemoteCodeExecution,
+    baseUrl: optionalString(args.base_url, "base_url"),
+    adminSecret: optionalString(args.admin_secret, "admin_secret"),
+    enableDangerousTools: optionalBoolean(args.enable_dangerous_tools, "enable_dangerous_tools") ?? false,
+    bootstrap: optionalBoolean(args.bootstrap, "bootstrap") ?? true,
+    smoke: optionalBoolean(args.smoke, "smoke") ?? true,
+    gpu: optionalString(args.gpu, "gpu"),
+    colabSession: optionalString(args.colab_session, "colab_session"),
+    projectRoot: optionalString(args.project_root, "project_root"),
+    colabConfig: optionalString(args.colab_config, "colab_config"),
+    configPath: optionalString(args.config, "config"),
+    timeoutSec,
+  };
+}
+
+function normalizeRuntimeOptionsPayload(args: Record<string, unknown>): RuntimeOptionsPayload {
+  const timeoutSec =
+    optionalNumber(args.timeout_sec, "timeout_sec") ?? DEFAULT_RUNTIME_OPTIONS_TIMEOUT_SEC;
+  if (timeoutSec <= 0 || timeoutSec > MAX_RUNTIME_OPTIONS_TIMEOUT_SEC) {
+    throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_RUNTIME_OPTIONS_TIMEOUT_SEC}.`, false);
+  }
+  return {
+    colabConfig: optionalString(args.colab_config, "colab_config"),
+    timeoutSec,
+  };
+}
+
+function normalizeRecreateRuntimePayload(args: Record<string, unknown>): RecreateRuntimePayload {
+  const gpu = optionalString(args.gpu, "gpu");
+  if (!gpu) {
+    throw bridgeError("INVALID_ARGUMENT", "gpu is required. Use \"none\" for a CPU runtime.", false);
+  }
+
+  const dryRun = optionalBoolean(args.dry_run, "dry_run") ?? false;
+  const confirmRuntimeRecreation =
+    optionalBoolean(args.confirm_runtime_recreation, "confirm_runtime_recreation") ?? false;
+  if (!dryRun && !confirmRuntimeRecreation) {
+    throw bridgeError(
+      "INVALID_ARGUMENT",
+      "confirm_runtime_recreation must be true because this stops the Colab runtime and loses active jobs.",
+      false,
+    );
+  }
+
+  return {
+    gpu,
+    dryRun,
+    confirmRuntimeRecreation,
+    skipStop: optionalBoolean(args.skip_stop, "skip_stop") ?? false,
+    smoke: optionalBoolean(args.smoke, "smoke") ?? true,
+    enableDangerousTools: optionalBoolean(args.enable_dangerous_tools, "enable_dangerous_tools"),
+    colabSession: optionalString(args.colab_session, "colab_session"),
+    projectRoot: optionalString(args.project_root, "project_root"),
+    colabConfig: optionalString(args.colab_config, "colab_config"),
+    configPath: optionalString(args.config, "config"),
+    baseUrl: optionalString(args.base_url, "base_url"),
+    adminSecret: optionalString(args.admin_secret, "admin_secret"),
+    timeoutSec: normalizeOperationTimeout(args.timeout_sec, MAX_OPERATION_TIMEOUT_SEC),
+  };
+}
+
+function normalizeOperationTimeout(value: unknown, maxTimeoutSec: number): number {
+  const timeoutSec = optionalNumber(value, "timeout_sec") ?? DEFAULT_OPERATION_TIMEOUT_SEC;
+  if (timeoutSec <= 0 || timeoutSec > maxTimeoutSec) {
+    throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${maxTimeoutSec}.`, false);
+  }
+  return timeoutSec;
+}
+
 function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -685,6 +947,201 @@ function runReconnectRunnerScript(
       });
     });
   });
+}
+
+function runSetupBridgeScript(
+  payload: SetupBridgePayload,
+  packageRoot: string,
+): Promise<LocalCommandResultPayload> {
+  const command = [
+    process.execPath,
+    "scripts/setup-all.mjs",
+    ...(payload.dryRun ? ["--dry-run"] : []),
+    ...(payload.bootstrap ? ["--bootstrap"] : ["--no-bootstrap"]),
+    ...(payload.smoke ? ["--smoke"] : []),
+    ...(payload.enableDangerousTools ? ["--enable-dangerous-tools"] : []),
+    ...(payload.baseUrl ? ["--base-url", payload.baseUrl] : []),
+    ...(payload.adminSecret ? ["--admin-secret", payload.adminSecret] : []),
+    ...(payload.gpu ? ["--gpu", payload.gpu] : []),
+    ...(payload.colabSession ? ["--colab-session", payload.colabSession] : []),
+    ...(payload.projectRoot ? ["--project-root", payload.projectRoot] : []),
+    ...(payload.colabConfig ? ["--colab-config", payload.colabConfig] : []),
+    ...(payload.configPath ? ["--config", payload.configPath] : []),
+  ];
+
+  return runLocalCommand(command, {
+    packageRoot,
+    timeoutSec: payload.timeoutSec,
+    dryRun: payload.dryRun,
+    redactions: [payload.adminSecret],
+  });
+}
+
+async function runRuntimeOptionsScript(
+  payload: RuntimeOptionsPayload,
+  packageRoot: string,
+): Promise<RuntimeOptionsResultPayload> {
+  const command = [
+    process.execPath,
+    "scripts/runtime-options.mjs",
+    "--json",
+    ...(payload.colabConfig ? ["--colab-config", payload.colabConfig] : []),
+  ];
+  const result = await runLocalCommand(command, {
+    packageRoot,
+    timeoutSec: payload.timeoutSec,
+    dryRun: false,
+  });
+
+  let parsed: Record<string, unknown> = {};
+  if (result.exit_code === 0 && !result.timed_out) {
+    try {
+      const value = JSON.parse(result.stdout) as Record<string, unknown>;
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        parsed = value;
+      }
+    } catch {
+      parsed = {};
+    }
+  }
+
+  return {
+    ...parsed,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exit_code: result.exit_code,
+    duration_ms: result.duration_ms,
+    timed_out: result.timed_out,
+    truncated: result.truncated,
+  };
+}
+
+function runRecreateRuntimeScript(
+  payload: RecreateRuntimePayload,
+  packageRoot: string,
+): Promise<LocalCommandResultPayload> {
+  const command = [
+    process.execPath,
+    "scripts/recreate-runtime.mjs",
+    "--gpu",
+    payload.gpu,
+    ...(payload.dryRun ? ["--dry-run"] : ["--yes"]),
+    ...(payload.skipStop ? ["--skip-stop"] : []),
+    ...(payload.smoke ? ["--smoke"] : []),
+    ...(payload.enableDangerousTools === true ? ["--enable-dangerous-tools"] : []),
+    ...(payload.enableDangerousTools === false ? ["--disable-dangerous-tools"] : []),
+    ...(payload.colabSession ? ["--colab-session", payload.colabSession] : []),
+    ...(payload.projectRoot ? ["--project-root", payload.projectRoot] : []),
+    ...(payload.colabConfig ? ["--colab-config", payload.colabConfig] : []),
+    ...(payload.configPath ? ["--config", payload.configPath] : []),
+    ...(payload.baseUrl ? ["--base-url", payload.baseUrl] : []),
+    ...(payload.adminSecret ? ["--admin-secret", payload.adminSecret] : []),
+  ];
+
+  return runLocalCommand(command, {
+    packageRoot,
+    timeoutSec: payload.timeoutSec,
+    dryRun: payload.dryRun,
+    redactions: [payload.adminSecret],
+  });
+}
+
+function runLocalCommand(
+  command: string[],
+  {
+    packageRoot,
+    timeoutSec,
+    dryRun,
+    redactions = [],
+  }: {
+    packageRoot: string;
+    timeoutSec: number;
+    dryRun: boolean;
+    redactions?: Array<string | undefined>;
+  },
+): Promise<LocalCommandResultPayload> {
+  const startedAt = Date.now();
+  const processTimeoutMs = Math.ceil((timeoutSec + 30) * 1000);
+  const redactedCommand = redactCommand(command, redactions);
+
+  return new Promise((resolvePromise) => {
+    const child = spawn(command[0]!, command.slice(1), {
+      cwd: packageRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    let timedOut = false;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, processTimeoutMs);
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      const appended = appendBounded(stdout, redactText(chunk, redactions), LOCAL_COMMAND_OUTPUT_BYTES);
+      stdout = appended.text;
+      truncated = truncated || appended.truncated;
+    });
+    child.stderr.on("data", (chunk) => {
+      const appended = appendBounded(stderr, redactText(chunk, redactions), LOCAL_COMMAND_OUTPUT_BYTES);
+      stderr = appended.text;
+      truncated = truncated || appended.truncated;
+    });
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      const appended = appendBounded(stderr, redactText(error.message, redactions), LOCAL_COMMAND_OUTPUT_BYTES);
+      resolvePromise({
+        command: redactedCommand,
+        stdout,
+        stderr: appended.text,
+        exit_code: 127,
+        duration_ms: Date.now() - startedAt,
+        timed_out: false,
+        truncated: truncated || appended.truncated,
+        dry_run: dryRun,
+      });
+    });
+    child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolvePromise({
+        command: redactedCommand,
+        stdout,
+        stderr,
+        exit_code: timedOut ? null : code ?? 1,
+        duration_ms: Date.now() - startedAt,
+        timed_out: timedOut,
+        truncated,
+        dry_run: dryRun,
+      });
+    });
+  });
+}
+
+function redactCommand(command: string[], redactions: Array<string | undefined>): string[] {
+  return command.map((part) => redactText(part, redactions));
+}
+
+function redactText(value: string, redactions: Array<string | undefined>): string {
+  let output = value;
+  for (const secret of redactions) {
+    if (secret) {
+      output = output.replaceAll(secret, "<redacted>");
+    }
+  }
+  return output;
 }
 
 function appendBounded(existing: string, chunk: string, maxBytes: number): { text: string; truncated: boolean } {

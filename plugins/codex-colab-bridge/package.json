@@ -8,6 +8,12 @@
     "node": ">=20"
   },
   "scripts": {
-    "runner:reconnect": "node scripts/reconnect-runner.mjs"
+    "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
+    "runner:reconnect": "node scripts/reconnect-runner.mjs",
+    "runtime:options": "node scripts/runtime-options.mjs",
+    "runtime:recreate": "node scripts/recreate-runtime.mjs",
+    "setup:all": "node scripts/setup-all.mjs",
+    "setup:bridge": "node scripts/setup-bridge.mjs",
+    "smoke:mcp": "node scripts/smoke-mcp.mjs"
   }
 }

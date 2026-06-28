@@ -51,25 +51,47 @@ open a browser OAuth flow. You can do a quick CLI sanity check with:
 uvx --from google-colab-cli colab sessions
 ```
 
-Preview the deploy/bootstrap plan. The dry run prints no secrets and does not
-touch Cloudflare or Colab:
+Install the Codex plugin before bridge setup. This is the agent-first path: the
+installed plugin provides MCP tools that run from the plugin package, so the
+user's current project does not need this repository checked out.
+
+For a local checkout:
 
 ```bash
-npm run setup:all -- --dry-run
+npm run package:plugin
+codex plugin marketplace add /absolute/path/to/codex-colab-bridge
+codex plugin add codex-colab-bridge@codex-colab-bridge
 ```
 
-Run the guided setup in the safer default mode:
+For a published GitHub repo:
+
+```bash
+codex plugin marketplace add https://github.com/<owner>/codex-colab-bridge
+codex plugin add codex-colab-bridge@codex-colab-bridge
+```
+
+Start a new Codex thread after installing so the app loads the plugin skill and
+MCP server. Then ask Codex to set up the bridge. Codex should call:
+
+```text
+colab_setup_bridge({
+  "confirm_remote_code_execution": true,
+  "smoke": true
+})
+```
+
+`colab_setup_bridge` checks local prerequisites, writes Cloudflare Worker
+secrets, deploys the Worker, creates a bridge session, writes
+`~/.config/codex-colab-bridge/config.json`, bootstraps a Colab T4 session named
+`codex-colab-bridge`, and runs the MCP smoke test when `smoke` is true. It
+generates an admin secret when one is not provided and never prints admin,
+controller, or runner token values.
+
+Source-checkout developers can run the equivalent shell command:
 
 ```bash
 npm run setup:all -- --smoke
 ```
-
-`setup:all` checks local prerequisites, writes Cloudflare Worker secrets, deploys
-the Worker, creates a bridge session, writes
-`~/.config/codex-colab-bridge/config.json`, bootstraps a Colab T4 session named
-`codex-colab-bridge`, and runs the MCP smoke test when `--smoke` is set. It
-generates an admin secret when one is not provided and never prints admin,
-controller, or runner token values.
 
 By default, setup writes the Worker dangerous-tools policy as disabled. This
 allows status, GPU status, read-file, and tail-job tools, but blocks remote
@@ -84,13 +106,15 @@ npm run setup:all -- --smoke
 ```
 
 Enable remote shell/Python/file-write/job-control tools only when you trust the
-Colab runtime and anything mounted inside it:
+Colab runtime and anything mounted inside it. From Codex, pass
+`enable_dangerous_tools: true` to `colab_setup_bridge`; from a source checkout:
 
 ```bash
 npm run setup:all -- --enable-dangerous-tools --smoke
 ```
 
-Check Colab accelerator candidates before choosing a runtime:
+Check Colab accelerator candidates before choosing a runtime with the MCP tool
+`colab_runtime_options`. Source-checkout developers can run:
 
 ```bash
 npm run runtime:options
@@ -100,9 +124,10 @@ This reads the supported CPU/GPU/TPU candidates from the installed
 `google-colab-cli`. It is not a live capacity or account-quota check; Colab
 confirms real availability only when it creates or recreates the runtime.
 
-To change the Colab accelerator after setup, recreate the runtime. This stops
-the named Colab session, creates a fresh bridge session, bootstraps the runner
-with the requested accelerator, and writes new local MCP config:
+To change the Colab accelerator after setup, call `colab_recreate_runtime` with
+`confirm_runtime_recreation: true`. This stops the named Colab session, creates
+a fresh bridge session, bootstraps the runner with the requested accelerator,
+and writes new local MCP config. Source-checkout developers can run:
 
 ```bash
 npm run runtime:recreate -- --gpu L4 --yes --smoke
@@ -111,16 +136,7 @@ npm run runtime:recreate -- --gpu L4 --yes --smoke
 Use `--gpu none` for CPU. Active Colab processes and runner-owned job/log state
 are lost when the runtime is recreated.
 
-After setup writes the local MCP config, install this checkout into the Codex
-app:
-
-```bash
-codex plugin marketplace add .
-codex plugin add codex-colab-bridge@codex-colab-bridge
-```
-
-Start a new Codex thread after installing so the app loads the plugin skill and
-MCP server. The plugin reads the local config written by setup.
+The plugin reads the local config written by setup.
 
 Create editable local config templates only when you want manual setup:
 
@@ -146,9 +162,19 @@ codex plugin marketplace add https://github.com/<owner>/codex-colab-bridge
 codex plugin add codex-colab-bridge@codex-colab-bridge
 ```
 
-The plugin contributes the local MCP server and a usage skill. The bridge still
-requires the Cloudflare Worker and Colab runner setup described above; installing
-the plugin does not deploy infrastructure or create tokens.
+The plugin contributes the local MCP server, a usage skill, and agent-facing
+setup/recovery tools:
+
+```text
+colab_setup_bridge
+colab_runtime_options
+colab_recreate_runtime
+colab_reconnect_runner
+```
+
+Installing the plugin alone does not deploy infrastructure or create tokens.
+An agent should call `colab_setup_bridge` from any user project when the user
+asks to set up the bridge.
 
 Run diagnostics:
 
@@ -262,9 +288,9 @@ The doctor checks Node, installed package files, `uvx`, `google-colab-cli`,
 `wrangler`, local MCP config, Worker `/health` when a URL is configured, and
 authenticated bridge status when the local controller token exists.
 
-If a Worker deploy disconnects a runner that was started by this repo's
-bootstrap script, reconnect it without creating a new bridge session. From
-Codex, call the MCP tool:
+If a Worker deploy disconnects a runner that was started by this bridge,
+reconnect it without creating a new bridge session. From Codex, call the MCP
+tool:
 
 ```text
 colab_reconnect_runner
@@ -285,7 +311,14 @@ outside `/content/project`.
 This is the safe first recovery step for `controller_connected=true` and
 `runner_connected=false`. It only works while the Colab VM still has the
 previous runner process environment available. If the runner process or VM is
-gone, recreate/bootstrap instead:
+gone, recreate/bootstrap with MCP tools instead:
+
+```text
+colab_setup_bridge
+colab_recreate_runtime
+```
+
+Source-checkout equivalents:
 
 ```bash
 npm run setup:all -- --bootstrap --smoke

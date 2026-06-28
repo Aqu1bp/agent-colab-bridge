@@ -10,7 +10,7 @@ Use the Codex Colab Bridge tools only for Colab runtimes the user controls. The 
 ## Safety Rules
 
 - Never print, request, or persist admin, controller, or runner token values in chat or repo files.
-- Before running commands, call `colab_status`. If the runner is offline, tell the user to run the setup or reconnect flow.
+- Before running commands, call `colab_status`. If bridge config is missing, call `colab_setup_bridge` after explicit user intent. If the runner is offline, call `colab_reconnect_runner` first.
 - Prefer `colab_gpu_status` for GPU inspection instead of ad hoc `nvidia-smi` unless more detail is needed.
 - Use `colab_run_shell` or `colab_run_python` only for short foreground checks.
 - Use `colab_start_job`, `colab_tail_job`, and `colab_interrupt_job` for long training/eval jobs.
@@ -42,39 +42,38 @@ process. It only works if the Colab VM and old runner process environment still
 exist.
 
 If reconnect fails because the pid file, runner process, or process environment
-is gone, recreate/bootstrap instead:
+is gone, call `colab_setup_bridge` to create a fresh bridge session and
+bootstrap Colab. Set `confirm_remote_code_execution` to `true` only when the
+user has asked to set up or reconnect this bridge.
 
-```bash
-npm run setup:all -- --bootstrap --smoke
-```
-
-Use `npm run runtime:recreate -- --gpu <GPU|none> --yes --smoke` when the runtime
-itself should be recreated or the accelerator should change.
+Use `colab_recreate_runtime` when the runtime itself should be recreated or the
+accelerator should change. Set `confirm_runtime_recreation` to `true` only after
+the user has accepted that active Colab jobs and runner-owned logs are lost.
 
 Do not try to recover runner tokens from logs or chat.
 
 ## Runtime Settings
 
 Changing GPU type, switching to CPU, or otherwise changing Colab runtime
-settings is a local provisioning task, not an MCP runner command. From a source
-checkout, use:
-
-```bash
-npm run runtime:recreate -- --gpu L4 --yes --smoke
-```
-
-To inspect supported accelerator candidates first, use:
-
-```bash
-npm run runtime:options
-```
+settings is a local provisioning task, not an MCP runner command. Use
+`colab_runtime_options` to inspect supported accelerator candidates first, then
+use `colab_recreate_runtime` with `gpu` set to `T4`, `L4`, `A100`, `H100`, or
+`none`.
 
 Treat that output as supported candidates from the installed Colab CLI, not a
 live capacity or account-quota guarantee. Real availability is confirmed only
 when Colab creates or recreates the runtime.
 
-Use `--gpu none` for CPU. This stops the named Colab session unless
-`--skip-stop` is passed, creates a fresh bridge session, bootstraps the runner,
-and rewrites the local MCP config. Confirm with the user before running it,
-because active Colab jobs, loaded models, temporary files outside durable
-storage, and runner-owned job/log state are lost.
+Use `gpu: "none"` for CPU. This stops the named Colab session unless
+`skip_stop` is set, creates a fresh bridge session, bootstraps the runner, and
+rewrites the local MCP config. Confirm with the user before running it, because
+active Colab jobs, loaded models, temporary files outside durable storage, and
+runner-owned job/log state are lost.
+
+## Source-Checkout Fallbacks
+
+When developing this bridge repository itself, the equivalent shell commands are
+`npm run setup:all -- --bootstrap --smoke`, `npm run runtime:options`, and
+`npm run runtime:recreate -- --gpu <GPU|none> --yes --smoke`. Agents working in
+an unrelated user project should prefer the MCP tools above instead of assuming
+the bridge repo is the current directory.
