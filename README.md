@@ -9,6 +9,25 @@ npm install
 npm test
 ```
 
+## Worker Slice
+
+The Worker-shaped entrypoint is `src/worker.ts`. It exports the default
+`fetch` handler plus `ColabBridgeSessionDurableObject` for the current safe HTTP
+bridge routes. Tests call the Worker with plain Node `Request`/`Response`
+objects and a mocked env:
+
+```ts
+await worker.fetch(request, { ADMIN_SECRET: "test_admin_secret" });
+```
+
+`wrangler.toml` defines the Durable Object binding and deliberately does not
+contain secrets. Configure the deployment admin secret outside source control,
+for example with Wrangler secrets:
+
+```bash
+npx wrangler secret put ADMIN_SECRET
+```
+
 ## Local MCP Server
 
 Build the TypeScript output, then run the local stdio JSON-RPC MCP server:
@@ -42,10 +61,15 @@ config file with `base_url` or `worker_url`, `session_id`, and
   tool surface.
 - Local MCP config parsing/loading and authenticated HTTP client calls with a
   fresh timestamp and nonce per bridge request.
+- A Cloudflare Worker-shaped entry module with an env-scoped in-memory fallback
+  for local tests and a Durable Object class with explicit persisted broker
+  state shape.
+- Secret-free Wrangler configuration for the Worker and Durable Object binding.
 
 ## Intentionally Not Implemented Yet
 
-- Real Cloudflare deployment, Durable Objects, WebSockets, and SQLite storage.
+- Real deployed Cloudflare integration tests, runner WebSockets, and full SQLite
+  table-backed Durable Object storage.
 - Real Colab runner code.
 - Shell execution, `run_python`, file tools, and background jobs.
 - Deployed Cloudflare wiring for the MCP server. The server is local and

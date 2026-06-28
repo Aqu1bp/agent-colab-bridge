@@ -151,8 +151,7 @@ export class SessionBroker {
     private readonly options: { sessionTtlMs?: number; authSkewMs?: number; runnerStaleMs?: number } = {},
   ) {}
 
-  createSession(now = new Date()): CreateSessionResult {
-    const sessionId = newId("sess");
+  createSession(now = new Date(), sessionId = newId("sess")): CreateSessionResult {
     const controllerToken = generateToken();
     const runnerToken = generateToken();
     const expiresAt = new Date(now.getTime() + (this.options.sessionTtlMs ?? 8 * 60 * 60 * 1000)).toISOString();
