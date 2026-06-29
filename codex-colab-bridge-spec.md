@@ -406,11 +406,12 @@ Rules:
 - Reject path traversal.
 - Reject symlink escapes.
 - Normalize lexical path first and reject `.`-only, empty, absolute, or `..`-containing paths.
-- Traverse each existing parent directory with no-follow checks.
+- Create missing parent directories under the project root for all write modes.
+- Traverse every parent directory with no-follow checks after creating any missing segment.
 - Reject if any parent component is a symlink.
 - For `overwrite` and `create_new`, write to a temporary file in the same parent directory and atomically rename.
 - Reject overwrite targets that are symlinks.
-- For `append`, reject symlink targets and append only to regular files.
+- For `append`, create the target file if needed; when the target already exists, reject symlink targets and append only to regular files.
 - Treat content as UTF-8 text for MVP.
 - Maximum content size for MVP: 1 MiB.
 - Modes: `overwrite`, `append`, `create_new`.

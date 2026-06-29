@@ -841,18 +841,18 @@ async def interrupt_job(payload: dict[str, Any]) -> InterruptJobResult:
 
 
 def write_file(payload: dict[str, Any]) -> WriteFileResult:
-    relative_path, target_path = resolve_safe_project_path(payload["path"])
     content = payload["content"]
     bytes_written = len(content.encode("utf-8"))
     if bytes_written > MAX_FILE_CONTENT_BYTES:
         raise RunnerCommandError("INVALID_ARGUMENT", f"content must be no larger than {MAX_FILE_CONTENT_BYTES} bytes.")
 
+    relative_path, target_path = resolve_safe_project_path(payload["path"], create_parents=True)
+
     target_stat = lstat_or_none(target_path)
     if payload["mode"] == "append":
-        if target_stat is None:
-            raise RunnerCommandError("INVALID_ARGUMENT", "append target must exist.")
-        assert_regular_file_target(target_stat)
-        fd = open_no_follow(target_path, os.O_WRONLY | os.O_APPEND)
+        if target_stat is not None:
+            assert_regular_file_target(target_stat)
+        fd = open_no_follow(target_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
         with os.fdopen(fd, "a", encoding="utf-8") as file:
             file.write(content)
         return WriteFileResult(path=relative_path, bytes_written=bytes_written, mode=payload["mode"])
@@ -917,7 +917,7 @@ def read_file(payload: dict[str, Any]) -> ReadFileResult:
     )
 
 
-def resolve_safe_project_path(input_path: str) -> tuple[str, Path]:
+def resolve_safe_project_path(input_path: str, create_parents: bool = False) -> tuple[str, Path]:
     relative_path = normalize_relative_project_path(input_path)
     ensure_project_root()
 
@@ -931,6 +931,14 @@ def resolve_safe_project_path(input_path: str) -> tuple[str, Path]:
     for segment in segments[:-1]:
         current = current / segment
         parent_stat = lstat_or_none(current)
+        if parent_stat is None:
+            if not create_parents:
+                raise RunnerCommandError("INVALID_ARGUMENT", "parent directory does not exist.")
+            try:
+                os.mkdir(current)
+            except FileExistsError:
+                pass
+            parent_stat = lstat_or_none(current)
         if parent_stat is None:
             raise RunnerCommandError("INVALID_ARGUMENT", "parent directory does not exist.")
         if stat.S_ISLNK(parent_stat.st_mode):
@@ -978,7 +986,7 @@ def assert_regular_file_target(target_stat: os.stat_result) -> None:
 def open_no_follow(path: Path, flags: int) -> int:
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     try:
-        return os.open(path, flags | no_follow)
+        return os.open(path, flags | no_follow, 0o666)
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise RunnerCommandError("FORBIDDEN_PATH", "symlink targets are not allowed.")

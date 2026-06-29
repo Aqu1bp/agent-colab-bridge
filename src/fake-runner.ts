@@ -787,7 +787,6 @@ async function runFakeWriteFile(
   payload: WriteFilePayload,
   projectRoot: string,
 ): Promise<WriteFileResultPayload> {
-  const safePath = await resolveSafeProjectPath(projectRoot, payload.path);
   const bytesWritten = Buffer.byteLength(payload.content, "utf8");
   if (bytesWritten > MAX_FILE_CONTENT_BYTES) {
     throw fileCommandError(
@@ -796,13 +795,17 @@ async function runFakeWriteFile(
     );
   }
 
+  const safePath = await resolveSafeProjectPath(projectRoot, payload.path, { createParents: true });
+
   if (payload.mode === "append") {
     const target = await lstatIfExists(safePath.absolutePath);
-    if (!target) {
-      throw fileCommandError("INVALID_ARGUMENT", "append target must exist.");
+    if (target) {
+      assertRegularFileTarget(target);
     }
-    assertRegularFileTarget(target);
-    const file = await openNoFollow(safePath.absolutePath, constants.O_WRONLY | constants.O_APPEND);
+    const file = await openNoFollow(
+      safePath.absolutePath,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT,
+    );
     try {
       await file.writeFile(payload.content, "utf8");
     } finally {
@@ -907,7 +910,11 @@ interface SafeProjectPath {
   parentPath: string;
 }
 
-async function resolveSafeProjectPath(projectRoot: string, inputPath: string): Promise<SafeProjectPath> {
+async function resolveSafeProjectPath(
+  projectRoot: string,
+  inputPath: string,
+  options: { createParents?: boolean } = {},
+): Promise<SafeProjectPath> {
   const relativePath = normalizeRelativeProjectPath(inputPath);
   await mkdir(projectRoot, { recursive: true });
   const rootStat = await lstat(projectRoot);
@@ -919,7 +926,20 @@ async function resolveSafeProjectPath(projectRoot: string, inputPath: string): P
   let current = projectRoot;
   for (const segment of segments.slice(0, -1)) {
     current = join(current, segment);
-    const parent = await lstatIfExists(current);
+    let parent = await lstatIfExists(current);
+    if (!parent) {
+      if (!options.createParents) {
+        throw fileCommandError("INVALID_ARGUMENT", "parent directory does not exist.");
+      }
+      try {
+        await mkdir(current);
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") {
+          throw error;
+        }
+      }
+      parent = await lstatIfExists(current);
+    }
     if (!parent) {
       throw fileCommandError("INVALID_ARGUMENT", "parent directory does not exist.");
     }

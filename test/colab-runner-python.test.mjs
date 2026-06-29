@@ -156,3 +156,123 @@ asyncio.run(main())
     await rm(projectRoot, { recursive: true, force: true });
   }
 });
+
+test("Colab runner write_file creates safe missing parent directories", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "colab-runner-python-files-"));
+  try {
+    const probe = `
+import asyncio
+import importlib.util
+import json
+import os
+import sys
+
+runner_path = sys.argv[1]
+project_root = sys.argv[2]
+os.environ["COLAB_BRIDGE_PROJECT_ROOT"] = project_root
+spec = importlib.util.spec_from_file_location("colab_runner", runner_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules["colab_runner"] = module
+spec.loader.exec_module(module)
+
+def envelope(command_type, payload=None):
+    envelope.counter += 1
+    return {
+        "protocol_version": 1,
+        "session_id": "sess_python_files",
+        "command_id": f"cmd_{envelope.counter}",
+        "message_id": f"msg_{envelope.counter}",
+        "kind": "command",
+        "type": command_type,
+        "sent_at": "2026-06-29T00:00:00Z",
+        "deadline_at": "2026-06-29T00:00:30Z",
+        "payload": payload or {},
+    }
+envelope.counter = 0
+
+async def main():
+    overwrite = await module.handle_command(envelope("write_file", {
+        "path": "nested/overwrite/hello.txt",
+        "content": "hello",
+        "mode": "overwrite",
+    }))
+    create_new = await module.handle_command(envelope("write_file", {
+        "path": "nested/create-new/config.txt",
+        "content": "first",
+        "mode": "create_new",
+    }))
+    duplicate_create_new = await module.handle_command(envelope("write_file", {
+        "path": "nested/create-new/config.txt",
+        "content": "second",
+        "mode": "create_new",
+    }))
+    append_missing = await module.handle_command(envelope("write_file", {
+        "path": "nested/append/log.txt",
+        "content": "first",
+        "mode": "append",
+    }))
+    append_existing = await module.handle_command(envelope("write_file", {
+        "path": "nested/append/log.txt",
+        "content": " second",
+        "mode": "append",
+    }))
+    append_exec_bits = os.stat(os.path.join(project_root, "nested", "append", "log.txt")).st_mode & 0o111
+    appended = await module.handle_command(envelope("read_file", {
+        "path": "nested/append/log.txt",
+        "max_bytes": 1024,
+    }))
+    oversized = await module.handle_command(envelope("write_file", {
+        "path": "oversized/should-not/exist.txt",
+        "content": "x" * (module.MAX_FILE_CONTENT_BYTES + 1),
+        "mode": "overwrite",
+    }))
+    oversized_parent_exists = os.path.exists(os.path.join(project_root, "oversized"))
+    traversal = await module.handle_command(envelope("write_file", {
+        "path": "../escape.txt",
+        "content": "no",
+        "mode": "overwrite",
+    }))
+    print(json.dumps({
+        "overwrite": overwrite,
+        "create_new": create_new,
+        "duplicate_create_new": duplicate_create_new,
+        "append_missing": append_missing,
+        "append_existing": append_existing,
+        "append_exec_bits": append_exec_bits,
+        "appended": appended,
+        "oversized": oversized,
+        "oversized_parent_exists": oversized_parent_exists,
+        "traversal": traversal,
+    }))
+
+asyncio.run(main())
+`;
+    const result = spawnSync("python3", ["-", resolve("python/colab_runner.py"), projectRoot], {
+      cwd: resolve("."),
+      input: probe,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim());
+
+    assert.equal(output.overwrite.ok, true);
+    assert.equal(output.overwrite.payload.path, "nested/overwrite/hello.txt");
+    assert.equal(output.create_new.ok, true);
+    assert.equal(output.duplicate_create_new.ok, false);
+    assert.equal(output.duplicate_create_new.error.code, "INVALID_ARGUMENT");
+    assert.equal(output.append_missing.ok, true);
+    assert.equal(output.append_existing.ok, true);
+    assert.equal(output.append_exec_bits, 0);
+    assert.equal(output.appended.ok, true);
+    assert.equal(output.appended.payload.content, "first second");
+    assert.equal(output.oversized.ok, false);
+    assert.equal(output.oversized.error.code, "INVALID_ARGUMENT");
+    assert.equal(output.oversized_parent_exists, false);
+    assert.equal(output.traversal.ok, false);
+    assert.equal(output.traversal.error.code, "FORBIDDEN_PATH");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});

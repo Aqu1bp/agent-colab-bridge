@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdir,
   mkdtemp,
   readFile,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -34,8 +34,6 @@ async function createFileHarness(): Promise<{
 test("fake runner write_file and read_file round trip UTF-8 text", async () => {
   const harness = await createFileHarness();
   try {
-    await mkdir(join(harness.projectRoot, "src"));
-
     const write = await harness.broker.createCommand(harness.session.sessionId, harness.controllerAuth(), {
       type: "write_file",
       payload: { path: "src/hello.txt", content: "hello", mode: "overwrite" },
@@ -71,6 +69,66 @@ test("fake runner write_file and read_file round trip UTF-8 text", async () => {
       bytes_read: 5,
       truncated: false,
     });
+  } finally {
+    await rm(harness.projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("fake runner write_file creates missing parent directories for all write modes", async () => {
+  const harness = await createFileHarness();
+  try {
+    const overwrite = await harness.broker.createCommand(harness.session.sessionId, harness.controllerAuth(), {
+      type: "write_file",
+      payload: { path: "nested/overwrite/hello.txt", content: "hello", mode: "overwrite" },
+    });
+    assert.equal(overwrite.state, "succeeded");
+    assert.equal(await readFile(join(harness.projectRoot, "nested", "overwrite", "hello.txt"), "utf8"), "hello");
+
+    const createNew = await harness.broker.createCommand(harness.session.sessionId, harness.controllerAuth(), {
+      type: "write_file",
+      payload: { path: "nested/create-new/config.txt", content: "first", mode: "create_new" },
+    });
+    assert.equal(createNew.state, "succeeded");
+    assert.equal(await readFile(join(harness.projectRoot, "nested", "create-new", "config.txt"), "utf8"), "first");
+
+    const duplicateCreateNew = await harness.broker.createCommand(
+      harness.session.sessionId,
+      harness.controllerAuth(),
+      {
+        type: "write_file",
+        payload: { path: "nested/create-new/config.txt", content: "second", mode: "create_new" },
+      },
+    );
+    assert.equal(duplicateCreateNew.state, "failed");
+    assert.equal(duplicateCreateNew.error?.code, "INVALID_ARGUMENT");
+    assert.equal(await readFile(join(harness.projectRoot, "nested", "create-new", "config.txt"), "utf8"), "first");
+
+    const appendMissing = await harness.broker.createCommand(harness.session.sessionId, harness.controllerAuth(), {
+      type: "write_file",
+      payload: { path: "nested/append/log.txt", content: "first", mode: "append" },
+    });
+    assert.equal(appendMissing.state, "succeeded");
+
+    const appendExisting = await harness.broker.createCommand(harness.session.sessionId, harness.controllerAuth(), {
+      type: "write_file",
+      payload: { path: "nested/append/log.txt", content: " second", mode: "append" },
+    });
+    assert.equal(appendExisting.state, "succeeded");
+    assert.equal(await readFile(join(harness.projectRoot, "nested", "append", "log.txt"), "utf8"), "first second");
+    const appendStat = await stat(join(harness.projectRoot, "nested", "append", "log.txt"));
+    assert.equal(appendStat.mode & 0o111, 0);
+
+    const oversized = await harness.broker.createCommand(harness.session.sessionId, harness.controllerAuth(), {
+      type: "write_file",
+      payload: {
+        path: "oversized/should-not/exist.txt",
+        content: "x".repeat(MAX_FILE_CONTENT_BYTES + 1),
+        mode: "overwrite",
+      },
+    });
+    assert.equal(oversized.state, "failed");
+    assert.equal(oversized.error?.code, "INVALID_ARGUMENT");
+    await assert.rejects(() => stat(join(harness.projectRoot, "oversized")), { code: "ENOENT" });
   } finally {
     await rm(harness.projectRoot, { recursive: true, force: true });
   }
@@ -130,6 +188,24 @@ test("fake runner rejects absolute paths, traversal, symlink targets, and symlin
     });
     assert.equal(symlinkParent.state, "failed");
     assert.equal(symlinkParent.error?.code, "FORBIDDEN_PATH");
+
+    const symlinkParentWrite = await harness.broker.createCommand(
+      harness.session.sessionId,
+      harness.controllerAuth(),
+      {
+        type: "write_file",
+        payload: { path: "parent-link/evil.txt", content: "no", mode: "overwrite" },
+      },
+    );
+    assert.equal(symlinkParentWrite.state, "failed");
+    assert.equal(symlinkParentWrite.error?.code, "FORBIDDEN_PATH");
+
+    const fileParent = await harness.broker.createCommand(harness.session.sessionId, harness.controllerAuth(), {
+      type: "write_file",
+      payload: { path: "real.txt/child.txt", content: "no", mode: "overwrite" },
+    });
+    assert.equal(fileParent.state, "failed");
+    assert.equal(fileParent.error?.code, "INVALID_ARGUMENT");
   } finally {
     await rm(harness.projectRoot, { recursive: true, force: true });
   }
