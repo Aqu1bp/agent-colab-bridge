@@ -1,6 +1,6 @@
 import { BrokerError } from "./broker.js";
 import { FakeRunner } from "./fake-runner.js";
-import { bridgeError, assertCommandType, isDangerousCommandType, normalizeForegroundRunPayload, normalizeInterruptJobPayload, normalizeReadFilePayload, normalizeStartJobPayload, normalizeTailJobPayload, normalizeWriteFilePayload, } from "./protocol.js";
+import { bridgeError, assertCommandType, isDangerousCommandType, normalizeForegroundRunPayload, normalizeInterruptJobPayload, normalizeJobStatusPayload, normalizeListJobsPayload, normalizeReadFilePayload, normalizeStartJobPayload, normalizeTailJobPayload, normalizeWriteFilePayload, } from "./protocol.js";
 import { RunnerConnection } from "./runner-connection.js";
 class HttpRouteError extends Error {
     status;
@@ -255,6 +255,30 @@ function parseCommandInput(body, options) {
         let jobPayload;
         try {
             jobPayload = normalizeStartJobPayload(payload ?? {});
+        }
+        catch (error) {
+            if (isBridgeErrorLike(error)) {
+                throw new HttpRouteError(400, error);
+            }
+            throw error;
+        }
+        normalizedPayload = jobPayload;
+    }
+    if (type === "list_jobs") {
+        try {
+            normalizedPayload = normalizeListJobsPayload(payload ?? {});
+        }
+        catch (error) {
+            if (isBridgeErrorLike(error)) {
+                throw new HttpRouteError(400, error);
+            }
+            throw error;
+        }
+    }
+    if (type === "job_status") {
+        let jobPayload;
+        try {
+            jobPayload = normalizeJobStatusPayload(payload ?? {});
         }
         catch (error) {
             if (isBridgeErrorLike(error)) {

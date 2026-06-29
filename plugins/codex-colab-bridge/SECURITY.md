@@ -8,6 +8,11 @@ start, and job interrupt must be enabled intentionally. Do not enable them for a
 runtime that contains secrets or mounted storage you would not allow remote
 commands to access.
 
+Revoking a bridge session invalidates the controller and runner credentials for
+that session. It does not stop the Colab runtime, kill active processes, unmount
+storage, or delete files in the VM. Use runtime stop/recreate flows when the VM
+itself should be terminated.
+
 ## Supported Versions
 
 This repository is pre-release. Until the first stable release, security fixes
@@ -39,4 +44,9 @@ Please include:
 - Do not mount Google Drive unless the active run requires it.
 - Do not transfer large artifacts, checkpoints, datasets, or package caches
   through Cloudflare.
+- Prefer `colab_upload_file` / `colab_download_file`, direct
+  `google-colab-cli upload` / `download`, or external storage for artifact
+  transfer; the Worker is for control traffic and bounded logs/results.
+- Treat runner-owned jobs and logs as volatile. Colab VM deletion, runtime
+  reset, runner death, or session recreation can lose active process state.
 - Rotate any token that may have been visible to Colab code or logs.

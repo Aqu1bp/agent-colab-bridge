@@ -73,6 +73,116 @@ export function loadLocalBridgeConfig(options = {}) {
         enable_dangerous_tools: envConfig.enable_dangerous_tools ?? fileConfig.enableDangerousTools,
     });
 }
+export function getLocalBridgeConfigSummary(options = {}) {
+    const env = options.env ?? process.env;
+    const envConfig = {
+        base_url: env.COLAB_MCP_BRIDGE_BASE_URL,
+        worker_url: env.COLAB_MCP_BRIDGE_WORKER_URL,
+        session_id: env.COLAB_MCP_BRIDGE_SESSION_ID,
+        controller_token: env.COLAB_MCP_BRIDGE_CONTROLLER_TOKEN,
+        enable_dangerous_tools: env.COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS,
+    };
+    const envSecretFlags = {
+        controller_token_set: hasStringValue(env.COLAB_MCP_BRIDGE_CONTROLLER_TOKEN),
+        runner_token_set: hasStringValue(env.COLAB_MCP_BRIDGE_RUNNER_TOKEN),
+        admin_secret_set: hasStringValue(env.COLAB_MCP_BRIDGE_ADMIN_SECRET),
+    };
+    const hasCompleteEnvConfig = (envConfig.base_url !== undefined || envConfig.worker_url !== undefined) &&
+        envConfig.session_id !== undefined &&
+        envConfig.controller_token !== undefined;
+    if (hasCompleteEnvConfig) {
+        try {
+            return configuredSummary(parseLocalBridgeConfig(envConfig), {
+                configSource: "env",
+                legacyConfigUsed: false,
+                secretFlags: envSecretFlags,
+            });
+        }
+        catch (error) {
+            return unconfiguredSummary({
+                configSource: "env",
+                legacyConfigUsed: false,
+                secretFlags: envSecretFlags,
+                error,
+            });
+        }
+    }
+    const explicitConfigPath = options.configPath ?? env.COLAB_MCP_BRIDGE_CONFIG;
+    const defaultExists = existsSync(DEFAULT_CONFIG_PATH);
+    const legacyExists = existsSync(LEGACY_CONFIG_PATH);
+    const configPath = explicitConfigPath ??
+        (defaultExists || !legacyExists ? DEFAULT_CONFIG_PATH : LEGACY_CONFIG_PATH);
+    const legacyConfigUsed = !explicitConfigPath && configPath === LEGACY_CONFIG_PATH;
+    const configSource = explicitConfigPath
+        ? "explicit_file"
+        : legacyConfigUsed
+            ? "legacy_file"
+            : "default_file";
+    if (!existsSync(configPath)) {
+        return unconfiguredSummary({
+            configSource,
+            configPath,
+            legacyConfigUsed,
+            secretFlags: envSecretFlags,
+            error: new BridgeConfigError(`Missing MCP bridge config. Set COLAB_MCP_BRIDGE_BASE_URL, COLAB_MCP_BRIDGE_SESSION_ID, and COLAB_MCP_BRIDGE_CONTROLLER_TOKEN or create ${DEFAULT_CONFIG_PATH}.`),
+        });
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(readFileSync(configPath, "utf8"));
+    }
+    catch {
+        return unconfiguredSummary({
+            configSource,
+            configPath,
+            legacyConfigUsed,
+            secretFlags: envSecretFlags,
+            error: new BridgeConfigError("MCP bridge config file must contain valid JSON."),
+        });
+    }
+    const fileSecretFlags = secretFlagsFromRecord(parsed);
+    const secretFlags = {
+        controller_token_set: envSecretFlags.controller_token_set || fileSecretFlags.controller_token_set,
+        runner_token_set: envSecretFlags.runner_token_set || fileSecretFlags.runner_token_set,
+        admin_secret_set: envSecretFlags.admin_secret_set || fileSecretFlags.admin_secret_set,
+    };
+    let fileConfig;
+    try {
+        fileConfig = parseLocalBridgeConfig(parsed);
+    }
+    catch (error) {
+        return unconfiguredSummary({
+            configSource,
+            configPath,
+            legacyConfigUsed,
+            secretFlags,
+            error,
+        });
+    }
+    try {
+        return configuredSummary(parseLocalBridgeConfig({
+            base_url: envConfig.base_url ?? (envConfig.worker_url ? undefined : fileConfig.baseUrl),
+            worker_url: envConfig.worker_url,
+            session_id: envConfig.session_id ?? fileConfig.sessionId,
+            controller_token: envConfig.controller_token ?? fileConfig.controllerToken,
+            enable_dangerous_tools: envConfig.enable_dangerous_tools ?? fileConfig.enableDangerousTools,
+        }), {
+            configSource,
+            configPath,
+            legacyConfigUsed,
+            secretFlags,
+        });
+    }
+    catch (error) {
+        return unconfiguredSummary({
+            configSource,
+            configPath,
+            legacyConfigUsed,
+            secretFlags,
+            error,
+        });
+    }
+}
 function stringField(record, key) {
     const value = record[key];
     return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -93,4 +203,54 @@ function booleanField(record, key) {
         return false;
     }
     throw new BridgeConfigError(`${key} must be a boolean or 1/0-style flag.`);
+}
+function configuredSummary(config, options) {
+    return {
+        configured: true,
+        config_source: options.configSource,
+        ...(options.configPath ? { config_path: options.configPath } : {}),
+        legacy_config_used: options.legacyConfigUsed,
+        base_url: config.baseUrl,
+        session_id: config.sessionId,
+        enable_dangerous_tools: config.enableDangerousTools,
+        controller_token_set: true,
+        runner_token_set: options.secretFlags.runner_token_set,
+        admin_secret_set: options.secretFlags.admin_secret_set,
+    };
+}
+function unconfiguredSummary(options) {
+    return {
+        configured: false,
+        config_source: options.configSource,
+        ...(options.configPath ? { config_path: options.configPath } : {}),
+        legacy_config_used: options.legacyConfigUsed,
+        controller_token_set: options.secretFlags.controller_token_set,
+        runner_token_set: options.secretFlags.runner_token_set,
+        admin_secret_set: options.secretFlags.admin_secret_set,
+        error: sanitizeConfigError(options.error),
+    };
+}
+function secretFlagsFromRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return {
+            controller_token_set: false,
+            runner_token_set: false,
+            admin_secret_set: false,
+        };
+    }
+    const record = value;
+    return {
+        controller_token_set: hasStringValue(record.controller_token) || hasStringValue(record.controllerToken),
+        runner_token_set: hasStringValue(record.runner_token) || hasStringValue(record.runnerToken),
+        admin_secret_set: hasStringValue(record.admin_secret) || hasStringValue(record.adminSecret),
+    };
+}
+function hasStringValue(value) {
+    return typeof value === "string" && value.trim().length > 0;
+}
+function sanitizeConfigError(error) {
+    if (error instanceof BridgeConfigError) {
+        return error.message;
+    }
+    return "MCP bridge config could not be summarized.";
 }

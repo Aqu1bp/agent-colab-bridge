@@ -10,25 +10,28 @@ Use the Codex Colab Bridge tools only for Colab runtimes the user controls. The 
 ## Safety Rules
 
 - Never print, request, or persist admin, controller, or runner token values in chat or repo files.
+- Use `colab_get_config_summary` when local bridge configuration is uncertain. It is local-only and redacts token values.
 - Before running commands, call `colab_status`. If bridge config is missing, call `colab_setup_bridge` after explicit user intent. If the runner is offline, call `colab_reconnect_runner` first.
 - Prefer `colab_gpu_status` for GPU inspection instead of ad hoc `nvidia-smi` unless more detail is needed.
 - Use `colab_run_shell` or `colab_run_python` only for short foreground checks.
 - Use `colab_start_job`, `colab_tail_job`, and `colab_interrupt_job` for long training/eval jobs.
 - Python child processes default to `PYTHONUNBUFFERED=1`; still prefer `python -u ...` or `flush=True` when model progress logs must appear immediately.
 - Keep generated files under `/content/project` unless the user explicitly asks for another location.
-- Do not move datasets, checkpoints, or large logs through Cloudflare or MCP file tools. Use Google Drive, GCS, Hugging Face Hub, GitHub Releases, or `google-colab-cli upload/download`.
+- Do not move datasets, checkpoints, or large logs through Cloudflare or remote MCP file tools. Use `colab_upload_file`, `colab_download_file`, direct `google-colab-cli upload/download`, Google Drive, GCS, Hugging Face Hub, or GitHub Releases.
 - Assume Colab VM deletion loses active processes and runner-owned job/log state.
 - Do not try to change GPU type from inside the runner. Runtime settings require recreating the Colab runtime, which is destructive.
 - Use `colab_stop_runtime` for stop-only runtime shutdowns. Set `confirm_runtime_stop` only after the user accepts that active Colab jobs and runner-owned logs are lost.
+- Use `colab_revoke_session` only when the user wants to invalidate bridge credentials. Revocation does not stop the Colab runtime or kill active Colab processes.
 
 ## Typical Flow
 
-1. Call `colab_status`.
-2. Call `colab_gpu_status` if GPU availability matters.
-3. For short checks, call `colab_run_shell` with tight timeout and output caps.
-4. For longer work, write or upload scripts, then call `colab_start_job`.
-5. Tail logs with `colab_tail_job` using cursors instead of repeatedly dumping full logs.
-6. Interrupt with `colab_interrupt_job` only when the user asks or the job is clearly runaway.
+1. Call `colab_get_config_summary` if setup state is unclear.
+2. Call `colab_status`.
+3. Call `colab_gpu_status` if GPU availability matters.
+4. For short checks, call `colab_run_shell` with tight timeout and output caps.
+5. For longer work, write or upload scripts, then call `colab_start_job`.
+6. Tail logs with `colab_tail_job` using cursors instead of repeatedly dumping full logs.
+7. Interrupt with `colab_interrupt_job` only when the user asks or the job is clearly runaway.
 
 ## Offline Runner
 
@@ -64,6 +67,11 @@ use `colab_recreate_runtime` with `gpu` set to `T4`, `L4`, `A100`, `H100`, or
 Use `colab_stop_runtime` when the user only wants the named Colab runtime
 stopped. Call `colab_status` afterwards; the runner should report offline once
 the Worker observes the runner WebSocket closing or heartbeat expiry.
+
+Use `colab_revoke_session` when only bridge credentials should be invalidated.
+Set `confirm_revoke_session` only after the user accepts that the bridge session
+will stop accepting controller and runner traffic. This does not stop the Colab
+VM, kill notebook cells, delete files, or clear mounted storage.
 
 Treat that output as supported candidates from the installed Colab CLI, not a
 live capacity or account-quota guarantee. Real availability is confirmed only

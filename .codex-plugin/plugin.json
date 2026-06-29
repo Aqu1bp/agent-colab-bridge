@@ -1,6 +1,6 @@
 {
   "name": "codex-colab-bridge",
-  "version": "0.1.0+codex.20260628210819",
+  "version": "0.1.0+codex.20260629071943",
   "description": "Use a Google Colab runtime from Codex through a Cloudflare-backed MCP bridge.",
   "author": {
     "name": "Codex Colab Bridge Contributors"

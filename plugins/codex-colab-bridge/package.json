@@ -9,6 +9,7 @@
   },
   "scripts": {
     "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
+    "doctor": "node scripts/doctor.mjs",
     "runner:reconnect": "node scripts/reconnect-runner.mjs",
     "runtime:options": "node scripts/runtime-options.mjs",
     "runtime:recreate": "node scripts/recreate-runtime.mjs",

@@ -12,7 +12,13 @@ export class BridgeHttpClient {
     async getStatus() {
         return this.request("GET", `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/status`);
     }
+    async revokeSession() {
+        return this.request("POST", `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/revoke`);
+    }
     async createPingCommand() {
+        return this.createRunnerPingCommand();
+    }
+    async createRunnerPingCommand() {
         return this.request("POST", `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`, { type: "ping" });
     }
     async createGpuStatusCommand() {
@@ -32,6 +38,12 @@ export class BridgeHttpClient {
     }
     async createStartJobCommand(payload) {
         return this.request("POST", `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`, { type: "start_job", payload });
+    }
+    async createListJobsCommand() {
+        return this.request("POST", `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`, { type: "list_jobs" });
+    }
+    async createJobStatusCommand(payload) {
+        return this.request("POST", `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`, { type: "job_status", payload });
     }
     async createTailJobCommand(payload) {
         return this.request("POST", `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`, { type: "tail_job", payload });

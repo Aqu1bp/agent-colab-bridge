@@ -3,10 +3,17 @@ import { stdin as processStdin, stdout as processStdout } from "node:process";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { bridgeError, normalizeForegroundRunPayload, normalizeInterruptJobPayload, normalizeReadFilePayload, normalizeStartJobPayload, normalizeTailJobPayload, normalizeWriteFilePayload, } from "./protocol.js";
+import { bridgeError, normalizeForegroundRunPayload, normalizeInterruptJobPayload, normalizeJobStatusPayload, normalizeListJobsPayload, normalizeReadFilePayload, normalizeStartJobPayload, normalizeTailJobPayload, normalizeWriteFilePayload, } from "./protocol.js";
 import { callToolError, callToolSuccess, disabledToolResult, isEnabledDangerousExecutionTool, toolByName, toolDefinitions, } from "./mcp.js";
 import { BridgeHttpClient } from "./mcp-client.js";
-import { BridgeConfigError, loadLocalBridgeConfig, } from "./mcp-config.js";
+import { BridgeConfigError, getLocalBridgeConfigSummary, loadLocalBridgeConfig, } from "./mcp-config.js";
+const DEFAULT_COLAB_SESSION_NAME = "codex-colab-bridge";
+const DEFAULT_DOCTOR_TIMEOUT_SEC = 120;
+const MAX_DOCTOR_TIMEOUT_SEC = 300;
+const DEFAULT_COLAB_CLI_TIMEOUT_SEC = 120;
+const MAX_COLAB_CLI_TIMEOUT_SEC = 300;
+const DEFAULT_COLAB_TRANSFER_TIMEOUT_SEC = 300;
+const MAX_COLAB_TRANSFER_TIMEOUT_SEC = 1800;
 const DEFAULT_RECONNECT_TIMEOUT_SEC = 60;
 const MAX_RECONNECT_TIMEOUT_SEC = 300;
 const DEFAULT_OPERATION_TIMEOUT_SEC = 900;
@@ -82,6 +89,37 @@ export class ColabMcpServer {
             if (!tool.enabledByDefault && !this.isToolEnabledByLocalPolicy(tool.name)) {
                 return disabledToolResult(params.name);
             }
+            if (tool.name === "colab_get_config_summary") {
+                const summary = this.getConfigSummary();
+                return callToolSuccess(summary.configured ? "Bridge config summary returned." : "Bridge config is not configured.", summary);
+            }
+            if (tool.name === "colab_revoke_session") {
+                let payload;
+                try {
+                    payload = normalizeRevokeSessionPayload(params.arguments);
+                }
+                catch (error) {
+                    if (isBridgeErrorLike(error)) {
+                        return callToolError(error);
+                    }
+                    throw error;
+                }
+                if (payload.dryRun) {
+                    const config = this.resolveConfig();
+                    return callToolSuccess("Session revocation dry run completed.", {
+                        revoked: false,
+                        dry_run: true,
+                        base_url: config.baseUrl,
+                        session_id: config.sessionId,
+                    });
+                }
+                const response = await this.clientRequest((client) => client.revokeSession());
+                if (!response.ok) {
+                    return callToolError(response.error ?? bridgeError("INTERNAL_ERROR", "Bridge session revocation failed.", false));
+                }
+                this.config = undefined;
+                return callToolSuccess("Bridge session revoked. Colab runtime was not stopped.", response.data ?? { revoked: true });
+            }
             if (tool.name === "colab_status") {
                 const response = await this.clientRequest((client) => client.getStatus());
                 if (!response.ok) {
@@ -93,8 +131,8 @@ export class ColabMcpServer {
                     response.data.runner_connected === true;
                 return callToolSuccess(runnerConnected ? "Runner connected." : "Runner offline.", response.data);
             }
-            if (tool.name === "colab_ping") {
-                const response = await this.clientRequest((client) => client.createPingCommand());
+            if (tool.name === "colab_runner_ping" || tool.name === "colab_ping") {
+                const response = await this.clientRequest((client) => client.createRunnerPingCommand());
                 if (!response.ok) {
                     return callToolError(response.error ?? bridgeError("INTERNAL_ERROR", "Bridge ping failed.", false));
                 }
@@ -114,6 +152,83 @@ export class ColabMcpServer {
                     return callToolError(command.error);
                 }
                 return callToolSuccess("GPU status command succeeded.", command);
+            }
+            if (tool.name === "colab_doctor") {
+                let payload;
+                try {
+                    payload = normalizeDoctorPayload(params.arguments);
+                }
+                catch (error) {
+                    if (isBridgeErrorLike(error)) {
+                        return callToolError(error);
+                    }
+                    throw error;
+                }
+                const result = await this.runDoctor(payload);
+                if (result.exit_code !== 0 || result.timed_out) {
+                    return localCommandErrorResult(result, `Colab doctor failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`);
+                }
+                return callToolSuccess("Colab doctor completed.", result);
+            }
+            if (tool.name === "colab_list_sessions") {
+                let payload;
+                try {
+                    payload = normalizeColabCliPayload(params.arguments);
+                }
+                catch (error) {
+                    if (isBridgeErrorLike(error)) {
+                        return callToolError(error);
+                    }
+                    throw error;
+                }
+                const result = await this.runListSessions(payload);
+                if (result.exit_code !== 0 || result.timed_out) {
+                    return localCommandErrorResult(result, `Colab sessions list failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`);
+                }
+                return callToolSuccess("Colab sessions returned.", result);
+            }
+            if (tool.name === "colab_runtime_status" || tool.name === "colab_runtime_url") {
+                let payload;
+                try {
+                    payload = normalizeColabRuntimePayload(params.arguments);
+                }
+                catch (error) {
+                    if (isBridgeErrorLike(error)) {
+                        return callToolError(error);
+                    }
+                    throw error;
+                }
+                const result = tool.name === "colab_runtime_status"
+                    ? await this.runRuntimeStatus(payload)
+                    : await this.runRuntimeUrl(payload);
+                if (result.exit_code !== 0 || result.timed_out) {
+                    const label = tool.name === "colab_runtime_status" ? "status" : "URL";
+                    return localCommandErrorResult(result, `Colab runtime ${label} failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`);
+                }
+                return callToolSuccess(tool.name === "colab_runtime_status" ? "Colab runtime status returned." : "Colab runtime URL returned.", result);
+            }
+            if (tool.name === "colab_upload_file" || tool.name === "colab_download_file") {
+                let payload;
+                try {
+                    payload = normalizeColabFileTransferPayload(params.arguments);
+                }
+                catch (error) {
+                    if (isBridgeErrorLike(error)) {
+                        return callToolError(error);
+                    }
+                    throw error;
+                }
+                const result = tool.name === "colab_upload_file"
+                    ? await this.runUploadFile(payload)
+                    : await this.runDownloadFile(payload);
+                if (result.exit_code !== 0 || result.timed_out) {
+                    const label = tool.name === "colab_upload_file" ? "upload" : "download";
+                    return localCommandErrorResult(result, `Colab file ${label} failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`);
+                }
+                const label = tool.name === "colab_upload_file" ? "upload" : "download";
+                return callToolSuccess(payload.dryRun
+                    ? `Colab file ${label} dry run completed.`
+                    : `Colab file ${label} completed.`, result);
             }
             if (tool.name === "colab_reconnect_runner") {
                 let payload;
@@ -255,12 +370,21 @@ export class ColabMcpServer {
                 return callToolSuccess("File command completed.", command);
             }
             if (tool.name === "colab_start_job" ||
+                tool.name === "colab_list_jobs" ||
+                tool.name === "colab_job_status" ||
                 tool.name === "colab_tail_job" ||
                 tool.name === "colab_interrupt_job") {
                 let payload;
                 try {
                     if (tool.name === "colab_start_job") {
                         payload = normalizeStartJobPayload(params.arguments);
+                    }
+                    else if (tool.name === "colab_list_jobs") {
+                        normalizeListJobsPayload(params.arguments);
+                        payload = undefined;
+                    }
+                    else if (tool.name === "colab_job_status") {
+                        payload = normalizeJobStatusPayload(params.arguments);
                     }
                     else if (tool.name === "colab_tail_job") {
                         payload = normalizeTailJobPayload(params.arguments);
@@ -279,6 +403,12 @@ export class ColabMcpServer {
                     if (tool.name === "colab_start_job") {
                         return client.createStartJobCommand(payload);
                     }
+                    if (tool.name === "colab_list_jobs") {
+                        return client.createListJobsCommand();
+                    }
+                    if (tool.name === "colab_job_status") {
+                        return client.createJobStatusCommand(payload);
+                    }
                     if (tool.name === "colab_tail_job") {
                         return client.createTailJobCommand(payload);
                     }
@@ -293,9 +423,13 @@ export class ColabMcpServer {
                 }
                 const text = tool.name === "colab_start_job"
                     ? "Background job started."
-                    : tool.name === "colab_tail_job"
-                        ? "Background job tail returned."
-                        : "Background job interrupt completed.";
+                    : tool.name === "colab_list_jobs"
+                        ? "Background job list returned."
+                        : tool.name === "colab_job_status"
+                            ? "Background job status returned."
+                            : tool.name === "colab_tail_job"
+                                ? "Background job tail returned."
+                                : "Background job interrupt completed.";
                 return callToolSuccess(text, command);
             }
             return disabledToolResult(params.name);
@@ -314,6 +448,66 @@ export class ColabMcpServer {
             handler: this.options.httpHandler,
         });
         return request(client);
+    }
+    getConfigSummary() {
+        try {
+            if (this.options.configSummaryLoader) {
+                return this.options.configSummaryLoader();
+            }
+            if (this.options.config !== undefined && this.config) {
+                return configSummaryFromResolvedConfig(this.config);
+            }
+            return getLocalBridgeConfigSummary();
+        }
+        catch (error) {
+            return {
+                configured: false,
+                config_source: "unknown",
+                legacy_config_used: false,
+                controller_token_set: false,
+                runner_token_set: false,
+                admin_secret_set: false,
+                error: error instanceof BridgeConfigError
+                    ? error.message
+                    : "MCP bridge config could not be summarized.",
+            };
+        }
+    }
+    async runDoctor(payload) {
+        if (this.options.doctor) {
+            return this.options.doctor(payload);
+        }
+        return runDoctorScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+    }
+    async runListSessions(payload) {
+        if (this.options.listSessions) {
+            return this.options.listSessions(payload);
+        }
+        return runListSessionsCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+    }
+    async runRuntimeStatus(payload) {
+        if (this.options.runtimeStatus) {
+            return this.options.runtimeStatus(payload);
+        }
+        return runRuntimeStatusCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+    }
+    async runRuntimeUrl(payload) {
+        if (this.options.runtimeUrl) {
+            return this.options.runtimeUrl(payload);
+        }
+        return runRuntimeUrlCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+    }
+    async runUploadFile(payload) {
+        if (this.options.uploadFile) {
+            return this.options.uploadFile(payload);
+        }
+        return runUploadFileCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+    }
+    async runDownloadFile(payload) {
+        if (this.options.downloadFile) {
+            return this.options.downloadFile(payload);
+        }
+        return runDownloadFileCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
     }
     async runReconnectRunner(payload) {
         if (this.options.reconnectRunner) {
@@ -474,6 +668,78 @@ function isBridgeErrorLike(value) {
         typeof record.message === "string" &&
         typeof record.retryable === "boolean");
 }
+function localCommandErrorResult(data, message) {
+    const error = bridgeError("INTERNAL_ERROR", message, true);
+    return {
+        content: [{ type: "text", text: `${error.code}: ${error.message}` }],
+        structuredContent: {
+            ok: false,
+            data,
+            error,
+        },
+        isError: true,
+    };
+}
+function configSummaryFromResolvedConfig(config) {
+    return {
+        configured: true,
+        config_source: "server_options",
+        legacy_config_used: false,
+        base_url: config.baseUrl,
+        session_id: config.sessionId,
+        enable_dangerous_tools: config.enableDangerousTools,
+        controller_token_set: true,
+        runner_token_set: false,
+        admin_secret_set: false,
+    };
+}
+function normalizeDoctorPayload(args) {
+    const timeoutSec = optionalNumber(args.timeout_sec, "timeout_sec") ?? DEFAULT_DOCTOR_TIMEOUT_SEC;
+    if (timeoutSec <= 0 || timeoutSec > MAX_DOCTOR_TIMEOUT_SEC) {
+        throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_DOCTOR_TIMEOUT_SEC}.`, false);
+    }
+    return {
+        configPath: optionalString(args.config, "config"),
+        baseUrl: optionalString(args.base_url, "base_url"),
+        skipNetwork: optionalBoolean(args.skip_network, "skip_network") ?? false,
+        requireNetwork: optionalBoolean(args.require_network, "require_network") ?? false,
+        timeoutSec,
+    };
+}
+function normalizeColabCliPayload(args) {
+    return {
+        colabConfig: optionalString(args.colab_config, "colab_config"),
+        timeoutSec: normalizeColabCliTimeout(args.timeout_sec),
+    };
+}
+function normalizeRevokeSessionPayload(args) {
+    const dryRun = optionalBoolean(args.dry_run, "dry_run") ?? false;
+    const confirmRevokeSession = optionalBoolean(args.confirm_revoke_session, "confirm_revoke_session") ?? false;
+    if (!dryRun && !confirmRevokeSession) {
+        throw bridgeError("INVALID_ARGUMENT", "confirm_revoke_session must be true for live session revocation. This invalidates the bridge token/session but does not stop the Colab runtime.", false);
+    }
+    return {
+        dryRun,
+        confirmRevokeSession,
+    };
+}
+function normalizeColabRuntimePayload(args) {
+    return {
+        colabSession: optionalString(args.colab_session, "colab_session") ?? DEFAULT_COLAB_SESSION_NAME,
+        colabConfig: optionalString(args.colab_config, "colab_config"),
+        timeoutSec: normalizeColabCliTimeout(args.timeout_sec),
+    };
+}
+function normalizeColabFileTransferPayload(args) {
+    return {
+        localPath: requiredString(args.local_path, "local_path"),
+        remotePath: requiredString(args.remote_path, "remote_path"),
+        colabSession: optionalString(args.colab_session, "colab_session") ?? DEFAULT_COLAB_SESSION_NAME,
+        colabConfig: optionalString(args.colab_config, "colab_config"),
+        timeoutSec: normalizeColabTransferTimeout(args.timeout_sec),
+        dryRun: optionalBoolean(args.dry_run, "dry_run") ?? false,
+    };
+}
 function normalizeReconnectRunnerPayload(args) {
     const colabSession = optionalString(args.colab_session, "colab_session");
     const colabConfig = optionalString(args.colab_config, "colab_config");
@@ -568,12 +834,33 @@ function normalizeRecreateRuntimePayload(args) {
         timeoutSec: normalizeOperationTimeout(args.timeout_sec, MAX_OPERATION_TIMEOUT_SEC),
     };
 }
+function normalizeColabCliTimeout(value) {
+    const timeoutSec = optionalNumber(value, "timeout_sec") ?? DEFAULT_COLAB_CLI_TIMEOUT_SEC;
+    if (timeoutSec <= 0 || timeoutSec > MAX_COLAB_CLI_TIMEOUT_SEC) {
+        throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_COLAB_CLI_TIMEOUT_SEC}.`, false);
+    }
+    return timeoutSec;
+}
+function normalizeColabTransferTimeout(value) {
+    const timeoutSec = optionalNumber(value, "timeout_sec") ?? DEFAULT_COLAB_TRANSFER_TIMEOUT_SEC;
+    if (timeoutSec <= 0 || timeoutSec > MAX_COLAB_TRANSFER_TIMEOUT_SEC) {
+        throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_COLAB_TRANSFER_TIMEOUT_SEC}.`, false);
+    }
+    return timeoutSec;
+}
 function normalizeOperationTimeout(value, maxTimeoutSec) {
     const timeoutSec = optionalNumber(value, "timeout_sec") ?? DEFAULT_OPERATION_TIMEOUT_SEC;
     if (timeoutSec <= 0 || timeoutSec > maxTimeoutSec) {
         throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${maxTimeoutSec}.`, false);
     }
     return timeoutSec;
+}
+function requiredString(value, label) {
+    const output = optionalString(value, label);
+    if (!output) {
+        throw bridgeError("INVALID_ARGUMENT", `${label} is required.`, false);
+    }
+    return output;
 }
 function optionalString(value, label) {
     if (value === undefined) {
@@ -601,6 +888,148 @@ function optionalBoolean(value, label) {
         throw bridgeError("INVALID_ARGUMENT", `${label} must be a boolean.`, false);
     }
     return value;
+}
+async function runDoctorScript(payload, packageRoot) {
+    const command = [
+        process.execPath,
+        "scripts/doctor.mjs",
+        "--json",
+        ...(payload.configPath ? ["--config", payload.configPath] : []),
+        ...(payload.baseUrl ? ["--base-url", payload.baseUrl] : []),
+        ...(payload.skipNetwork ? ["--skip-network"] : []),
+        ...(payload.requireNetwork ? ["--require-network"] : []),
+    ];
+    const result = await runLocalCommand(command, {
+        packageRoot,
+        timeoutSec: payload.timeoutSec,
+        dryRun: false,
+    });
+    const parsed = parseDoctorJson(result.stdout);
+    return {
+        ...result,
+        ...parsed,
+    };
+}
+function runListSessionsCommand(payload, packageRoot) {
+    return runLocalCommand([...colabCliBaseCommand(payload.colabConfig), "sessions"], {
+        packageRoot,
+        timeoutSec: payload.timeoutSec,
+        dryRun: false,
+    });
+}
+function runRuntimeStatusCommand(payload, packageRoot) {
+    return runLocalCommand([...colabCliBaseCommand(payload.colabConfig), "status", "-s", payload.colabSession], {
+        packageRoot,
+        timeoutSec: payload.timeoutSec,
+        dryRun: false,
+    });
+}
+function runRuntimeUrlCommand(payload, packageRoot) {
+    return runLocalCommand([...colabCliBaseCommand(payload.colabConfig), "url", "-s", payload.colabSession], {
+        packageRoot,
+        timeoutSec: payload.timeoutSec,
+        dryRun: false,
+    });
+}
+function runUploadFileCommand(payload, packageRoot) {
+    const command = [
+        ...colabCliBaseCommand(payload.colabConfig),
+        "upload",
+        "-s",
+        payload.colabSession,
+        payload.localPath,
+        payload.remotePath,
+    ];
+    return runFileTransferCommand(command, {
+        packageRoot,
+        timeoutSec: payload.timeoutSec,
+        dryRun: payload.dryRun,
+        dryRunMessage: "Dry run only. No file was uploaded through google-colab-cli.",
+    });
+}
+function runDownloadFileCommand(payload, packageRoot) {
+    const command = [
+        ...colabCliBaseCommand(payload.colabConfig),
+        "download",
+        "-s",
+        payload.colabSession,
+        payload.remotePath,
+        payload.localPath,
+    ];
+    return runFileTransferCommand(command, {
+        packageRoot,
+        timeoutSec: payload.timeoutSec,
+        dryRun: payload.dryRun,
+        dryRunMessage: "Dry run only. No file was downloaded through google-colab-cli.",
+    });
+}
+function colabCliBaseCommand(colabConfig) {
+    return [
+        "uvx",
+        "--from",
+        "google-colab-cli",
+        "colab",
+        ...(colabConfig ? ["--config", colabConfig] : []),
+    ];
+}
+function runFileTransferCommand(command, options) {
+    if (options.dryRun) {
+        return Promise.resolve({
+            command,
+            stdout: `${options.dryRunMessage}\n`,
+            stderr: "",
+            exit_code: 0,
+            duration_ms: 0,
+            timed_out: false,
+            truncated: false,
+            dry_run: true,
+        });
+    }
+    return runLocalCommand(command, {
+        packageRoot: options.packageRoot,
+        timeoutSec: options.timeoutSec,
+        dryRun: false,
+    });
+}
+function parseDoctorJson(stdout) {
+    try {
+        const parsed = JSON.parse(stdout);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return {};
+        }
+        const output = {};
+        if (typeof parsed.ok === "boolean") {
+            output.ok = parsed.ok;
+        }
+        if (isDoctorSummary(parsed.summary)) {
+            output.summary = parsed.summary;
+        }
+        if (Array.isArray(parsed.checks)) {
+            output.checks = parsed.checks.filter(isDoctorCheck);
+        }
+        return output;
+    }
+    catch {
+        return {};
+    }
+}
+function isDoctorSummary(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+    }
+    const record = value;
+    return (typeof record.pass === "number" &&
+        typeof record.warn === "number" &&
+        typeof record.fail === "number");
+}
+function isDoctorCheck(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+    }
+    const record = value;
+    return (typeof record.status === "string" &&
+        typeof record.name === "string" &&
+        typeof record.message === "string");
 }
 function runReconnectRunnerScript(payload, packageRoot) {
     const command = [

@@ -117,6 +117,8 @@ export function assertCommandType(value) {
         value !== "write_file" &&
         value !== "read_file" &&
         value !== "start_job" &&
+        value !== "list_jobs" &&
+        value !== "job_status" &&
         value !== "tail_job" &&
         value !== "interrupt_job") {
         throw bridgeError("INVALID_ARGUMENT", `Unsupported command type: ${value}`);
@@ -209,6 +211,21 @@ export function normalizeTailJobPayload(payload) {
     const cursor = normalizeNonNegativeInteger(record.cursor, "cursor", 0);
     const maxBytes = normalizePositiveInteger(record.max_bytes, "max_bytes", DEFAULT_TAIL_MAX_BYTES, MAX_TAIL_BYTES);
     return { job_id: jobId, cursor, max_bytes: maxBytes };
+}
+export function normalizeListJobsPayload(payload) {
+    const record = normalizeObjectPayload(payload, "list_jobs payload");
+    if (Object.keys(record).length > 0) {
+        throw bridgeError("INVALID_ARGUMENT", "list_jobs payload must not include properties.");
+    }
+    return {};
+}
+export function normalizeJobStatusPayload(payload) {
+    const record = normalizeObjectPayload(payload, "job_status payload");
+    const jobId = record.job_id;
+    if (typeof jobId !== "string" || jobId.length === 0) {
+        throw bridgeError("INVALID_ARGUMENT", "job_id must be a non-empty string.");
+    }
+    return { job_id: jobId };
 }
 export function normalizeInterruptJobPayload(payload) {
     const record = normalizeObjectPayload(payload, "interrupt_job payload");

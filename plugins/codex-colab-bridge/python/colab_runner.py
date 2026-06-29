@@ -253,8 +253,15 @@ def split_utf8_text_by_bytes(text: str, max_bytes: int) -> list[str]:
 
 
 class BackgroundJob:
-    def __init__(self, job_id: str, process: asyncio.subprocess.Process, max_log_bytes: int):
+    def __init__(
+        self,
+        job_id: str,
+        process: asyncio.subprocess.Process,
+        max_log_bytes: int,
+        name: str | None = None,
+    ):
         self.job_id = job_id
+        self.name = name
         self.process = process
         self.started_at = now_iso()
         self.status = "running"
@@ -288,6 +295,19 @@ class BackgroundJob:
         global ACTIVE_JOB_ID
         if ACTIVE_JOB_ID == self.job_id:
             ACTIVE_JOB_ID = None
+
+    def summary(self, active: bool) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "job_id": self.job_id,
+            "status": self.status,
+            "started_at": self.started_at,
+            "exit_code": self.exit_code,
+            "interrupted_at": self.interrupted_at,
+            "active": active,
+        }
+        if self.name is not None:
+            result["name"] = self.name
+        return result
 
     def tail(self, cursor: int, max_bytes: int) -> TailJobResult:
         try:
@@ -419,6 +439,9 @@ def torch_gpu_status() -> GpuStatus:
 
 async def handle_command(envelope: dict[str, Any]) -> dict[str, Any]:
     command_type = envelope.get("type")
+    if command_type == "ping":
+        return result_envelope(envelope, ok=True, payload={"ok": True, "pong": True})
+
     if command_type == "gpu_status":
         return result_envelope(envelope, ok=True, payload=asdict(gpu_status()))
 
@@ -469,6 +492,24 @@ async def handle_command(envelope: dict[str, Any]) -> dict[str, Any]:
         except RunnerCommandError as error:
             return command_error_result(envelope, error)
         return result_envelope(envelope, ok=True, payload=asdict(result))
+
+    if command_type == "list_jobs":
+        try:
+            payload = normalize_list_jobs_payload(envelope.get("payload", {}))
+            result = list_jobs(payload)
+        except ValueError as error:
+            return invalid_argument_result(envelope, str(error))
+        return result_envelope(envelope, ok=True, payload=result)
+
+    if command_type == "job_status":
+        try:
+            payload = normalize_job_status_payload(envelope.get("payload", {}))
+            result = job_status(payload)
+        except ValueError as error:
+            return invalid_argument_result(envelope, str(error))
+        except RunnerCommandError as error:
+            return command_error_result(envelope, error)
+        return result_envelope(envelope, ok=True, payload=result)
 
     if command_type == "tail_job":
         try:
@@ -639,6 +680,27 @@ def normalize_tail_job_payload(payload: Any) -> dict[str, Any]:
     return {"job_id": job_id, "cursor": cursor, "max_bytes": max_bytes}
 
 
+def normalize_list_jobs_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("list_jobs payload must be an object.")
+
+    if len(payload) > 0:
+        raise ValueError("list_jobs payload must not include properties.")
+
+    return {}
+
+
+def normalize_job_status_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("job_status payload must be an object.")
+
+    job_id = payload.get("job_id")
+    if not isinstance(job_id, str) or job_id == "":
+        raise ValueError("job_id must be a non-empty string.")
+
+    return {"job_id": job_id}
+
+
 def normalize_interrupt_job_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("interrupt_job payload must be an object.")
@@ -730,10 +792,30 @@ async def start_job(payload: dict[str, Any]) -> StartJobResult:
         start_new_session=True,
     )
     job_id = f"job_{uuid.uuid4().hex}"
-    job = BackgroundJob(job_id, process, payload["max_log_bytes"])
+    job = BackgroundJob(job_id, process, payload["max_log_bytes"], payload.get("name"))
     JOBS[job_id] = job
     ACTIVE_JOB_ID = job_id
     return StartJobResult(job_id=job_id, status="running", started_at=job.started_at)
+
+
+def list_jobs(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "jobs": [
+            job.summary(ACTIVE_JOB_ID == job.job_id and job.status == "running")
+            for job in JOBS.values()
+        ]
+    }
+
+
+def job_status(payload: dict[str, Any]) -> dict[str, Any]:
+    job = JOBS.get(payload["job_id"])
+    if job is None:
+        raise RunnerCommandError(
+            "JOB_NOT_FOUND",
+            "Background job was not found.",
+            payload={"job_id": payload["job_id"]},
+        )
+    return job.summary(ACTIVE_JOB_ID == job.job_id and job.status == "running")
 
 
 def tail_job(payload: dict[str, Any]) -> TailJobResult:

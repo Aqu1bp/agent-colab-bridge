@@ -5,7 +5,7 @@ import { link, lstat, mkdir, open, rename, rm, unlink, writeFile, } from "node:f
 import { tmpdir } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { bridgeError, createResultEnvelope, MAX_FILE_CONTENT_BYTES, newId, normalizeForegroundRunPayload, normalizeInterruptJobPayload, normalizeReadFilePayload, normalizeStartJobPayload, normalizeTailJobPayload, normalizeWriteFilePayload, } from "./protocol.js";
+import { bridgeError, createResultEnvelope, MAX_FILE_CONTENT_BYTES, newId, normalizeForegroundRunPayload, normalizeInterruptJobPayload, normalizeJobStatusPayload, normalizeListJobsPayload, normalizeReadFilePayload, normalizeStartJobPayload, normalizeTailJobPayload, normalizeWriteFilePayload, } from "./protocol.js";
 export class FakeRunner {
     broker;
     sessionId;
@@ -108,6 +108,43 @@ export class FakeRunner {
                 });
             }
         }
+        if (envelope.type === "list_jobs") {
+            try {
+                normalizeListJobsPayload(envelope.payload);
+                const result = this.listBackgroundJobs();
+                return createResultEnvelope({
+                    command: envelope,
+                    ok: true,
+                    payload: result,
+                });
+            }
+            catch (error) {
+                return createResultEnvelope({
+                    command: envelope,
+                    ok: false,
+                    payload: backgroundJobErrorPayload(error),
+                    error: toBridgeError(error, "Background job list failed."),
+                });
+            }
+        }
+        if (envelope.type === "job_status") {
+            try {
+                const result = this.backgroundJobStatus(normalizeJobStatusPayload(envelope.payload));
+                return createResultEnvelope({
+                    command: envelope,
+                    ok: true,
+                    payload: result,
+                });
+            }
+            catch (error) {
+                return createResultEnvelope({
+                    command: envelope,
+                    ok: false,
+                    payload: backgroundJobErrorPayload(error),
+                    error: toBridgeError(error, "Background job status failed."),
+                });
+            }
+        }
         if (envelope.type === "tail_job") {
             try {
                 const result = this.tailBackgroundJob(normalizeTailJobPayload(envelope.payload));
@@ -187,6 +224,20 @@ export class FakeRunner {
             });
         }
         return job.tail(payload.cursor, payload.max_bytes);
+    }
+    listBackgroundJobs() {
+        return {
+            jobs: Array.from(this.jobs.values()).map((job) => job.summary(this.activeJobId === job.id && job.status === "running")),
+        };
+    }
+    backgroundJobStatus(payload) {
+        const job = this.jobs.get(payload.job_id);
+        if (!job) {
+            throw backgroundJobError("JOB_NOT_FOUND", "Background job was not found.", {
+                job_id: payload.job_id,
+            });
+        }
+        return job.summary(this.activeJobId === job.id && job.status === "running");
     }
     async interruptBackgroundJob(payload) {
         const job = this.jobs.get(payload.job_id);
@@ -292,6 +343,7 @@ class FakeBackgroundJob {
     child;
     id;
     startedAt;
+    name;
     status = "running";
     exitCode = null;
     interruptedAt = null;
@@ -301,6 +353,7 @@ class FakeBackgroundJob {
         this.child = child;
         this.id = newId("job");
         this.startedAt = currentIso();
+        this.name = payload.name;
         this.logRing = new JobLogRing(payload.max_log_bytes);
         this.done = this.watchChild();
         this.watchStream("stdout");
@@ -315,6 +368,17 @@ class FakeBackgroundJob {
             stdio: ["ignore", "pipe", "pipe"],
         });
         return new FakeBackgroundJob(child, payload);
+    }
+    summary(active) {
+        return {
+            job_id: this.id,
+            status: this.status,
+            started_at: this.startedAt,
+            exit_code: this.exitCode,
+            interrupted_at: this.interruptedAt,
+            active,
+            ...(this.name !== undefined ? { name: this.name } : {}),
+        };
     }
     tail(cursor, maxBytes) {
         const result = this.logRing.tail(cursor, maxBytes);

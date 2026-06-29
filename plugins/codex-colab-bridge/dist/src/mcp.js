@@ -44,6 +44,18 @@ export const localOperationalAnnotations = {
     idempotentHint: false,
     openWorldHint: true,
 };
+export const sessionRevocationAnnotations = {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+};
+export const readOnlyLocalOperationalAnnotations = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+};
 export const toolDefinitions = [
     {
         name: "colab_status",
@@ -54,8 +66,31 @@ export const toolDefinitions = [
         enabledByDefault: true,
     },
     {
-        name: "colab_ping",
-        description: "Test-only authenticated fake runner ping.",
+        name: "colab_get_config_summary",
+        description: "Return a sanitized summary of effective local bridge config without contacting the Worker.",
+        inputSchema: emptyObjectSchema,
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyLocalOperationalAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_revoke_session",
+        description: "Revoke the current bridge session through the Worker. This invalidates bridge tokens but does not stop the Colab runtime.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                dry_run: { type: "boolean", default: false },
+                confirm_revoke_session: { type: "boolean", default: false },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: sessionRevocationAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_runner_ping",
+        description: "Run an authenticated ping through the connected Colab runner.",
         inputSchema: emptyObjectSchema,
         outputSchema: structuredOutputSchema,
         annotations: readOnlyRemoteAnnotations,
@@ -67,6 +102,111 @@ export const toolDefinitions = [
         inputSchema: emptyObjectSchema,
         outputSchema: structuredOutputSchema,
         annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_doctor",
+        description: "Run local Colab bridge prerequisite, config, and optional network diagnostics without requiring bridge config.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                config: { type: "string" },
+                base_url: { type: "string" },
+                skip_network: { type: "boolean", default: false },
+                require_network: { type: "boolean", default: false },
+                timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyLocalOperationalAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_list_sessions",
+        description: "List local google-colab-cli sessions without requiring bridge config.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                colab_config: { type: "string" },
+                timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyLocalOperationalAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_runtime_status",
+        description: "Return google-colab-cli status for the named Colab session without requiring bridge config.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                colab_session: { type: "string", default: "codex-colab-bridge" },
+                colab_config: { type: "string" },
+                timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyLocalOperationalAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_runtime_url",
+        description: "Return google-colab-cli URL for the named Colab session without requiring bridge config.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                colab_session: { type: "string", default: "codex-colab-bridge" },
+                colab_config: { type: "string" },
+                timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyLocalOperationalAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_upload_file",
+        description: "Upload a local file to the named Colab session through google-colab-cli.",
+        inputSchema: {
+            type: "object",
+            required: ["local_path", "remote_path"],
+            properties: {
+                local_path: { type: "string" },
+                remote_path: { type: "string" },
+                colab_session: { type: "string", default: "codex-colab-bridge" },
+                colab_config: { type: "string" },
+                timeout_sec: { type: "number", default: 300, minimum: 1, maximum: 1800 },
+                dry_run: { type: "boolean", default: false },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: localOperationalAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_download_file",
+        description: "Download a file from the named Colab session through google-colab-cli.",
+        inputSchema: {
+            type: "object",
+            required: ["remote_path", "local_path"],
+            properties: {
+                remote_path: { type: "string" },
+                local_path: { type: "string" },
+                colab_session: { type: "string", default: "codex-colab-bridge" },
+                colab_config: { type: "string" },
+                timeout_sec: { type: "number", default: 300, minimum: 1, maximum: 1800 },
+                dry_run: { type: "boolean", default: false },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: localOperationalAnnotations,
         enabledByDefault: true,
     },
     {
@@ -287,6 +427,29 @@ export const toolDefinitions = [
         enabledByDefault: true,
     },
     {
+        name: "colab_list_jobs",
+        description: "List runner-owned background job summaries from the connected Colab runner.",
+        inputSchema: emptyObjectSchema,
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
+        name: "colab_job_status",
+        description: "Return one runner-owned background job summary from the connected Colab runner.",
+        inputSchema: {
+            type: "object",
+            required: ["job_id"],
+            properties: {
+                job_id: { type: "string" },
+            },
+            additionalProperties: false,
+        },
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+    {
         name: "colab_interrupt_job",
         description: "Interrupt a background job process group in the connected Colab runner when explicitly enabled.",
         inputSchema: {
@@ -308,8 +471,19 @@ export const toolDefinitions = [
         enabledByDefault: false,
     },
 ];
+const hiddenToolAliases = [
+    {
+        name: "colab_ping",
+        description: "Backward-compatible alias for colab_runner_ping.",
+        inputSchema: emptyObjectSchema,
+        outputSchema: structuredOutputSchema,
+        annotations: readOnlyRemoteAnnotations,
+        enabledByDefault: true,
+    },
+];
 export function toolByName(name) {
-    return toolDefinitions.find((tool) => tool.name === name);
+    return (toolDefinitions.find((tool) => tool.name === name) ??
+        hiddenToolAliases.find((tool) => tool.name === name));
 }
 export function isEnabledDangerousExecutionTool(name) {
     return (name === "colab_run_shell" ||
