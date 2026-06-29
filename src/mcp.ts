@@ -87,6 +87,13 @@ export const localOperationalAnnotations: ToolAnnotations = {
   openWorldHint: true,
 };
 
+export const sessionRevocationAnnotations: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true,
+};
+
 export const readOnlyLocalOperationalAnnotations: ToolAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -101,6 +108,31 @@ export const toolDefinitions: ToolDefinition[] = [
     inputSchema: emptyObjectSchema,
     outputSchema: structuredOutputSchema,
     annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_get_config_summary",
+    description:
+      "Return a sanitized summary of effective local bridge config without contacting the Worker.",
+    inputSchema: emptyObjectSchema,
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyLocalOperationalAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_revoke_session",
+    description:
+      "Revoke the current bridge session through the Worker. This invalidates bridge tokens but does not stop the Colab runtime.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dry_run: { type: "boolean", default: false },
+        confirm_revoke_session: { type: "boolean", default: false },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: sessionRevocationAnnotations,
     enabledByDefault: true,
   },
   {

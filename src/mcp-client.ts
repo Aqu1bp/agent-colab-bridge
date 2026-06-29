@@ -34,6 +34,10 @@ export interface BridgeCommandData {
   state_history: string[];
 }
 
+export interface RevokeSessionData {
+  revoked: boolean;
+}
+
 export interface BridgeHttpClientOptions {
   handler?: BridgeHttpHandler;
   fetch?: typeof fetch;
@@ -53,6 +57,13 @@ export class BridgeHttpClient {
 
   async getStatus(): Promise<BridgeHttpEnvelope> {
     return this.request("GET", `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/status`);
+  }
+
+  async revokeSession(): Promise<BridgeHttpEnvelope<RevokeSessionData>> {
+    return this.request(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/revoke`,
+    );
   }
 
   async createPingCommand(): Promise<BridgeHttpEnvelope<BridgeCommandData>> {

@@ -39,6 +39,11 @@ test("tool metadata declares annotations and output schemas", () => {
   }
 
   assert.equal(toolByName("colab_status")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_get_config_summary")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_get_config_summary")?.annotations.readOnlyHint, true);
+  assert.equal(toolByName("colab_revoke_session")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_revoke_session")?.annotations.readOnlyHint, false);
+  assert.equal(toolByName("colab_revoke_session")?.annotations.destructiveHint, true);
   assert.equal(toolByName("colab_runner_ping")?.enabledByDefault, true);
   assert.equal(toolByName("colab_runner_ping")?.annotations.readOnlyHint, true);
   assert.equal(toolByName("colab_ping")?.enabledByDefault, true);

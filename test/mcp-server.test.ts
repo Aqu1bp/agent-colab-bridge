@@ -10,6 +10,7 @@ import {
   type BridgeHttpHandler,
 } from "../src/http.js";
 import {
+  getLocalBridgeConfigSummary,
   loadLocalBridgeConfig,
   parseLocalBridgeConfig,
   type LocalBridgeConfig,
@@ -173,6 +174,8 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   const response = await send(transport, "tools/list");
   const result = response.result as { tools: Array<Record<string, unknown>> };
   const runnerPing = result.tools.find((tool) => tool.name === "colab_runner_ping");
+  const configSummary = result.tools.find((tool) => tool.name === "colab_get_config_summary");
+  const revokeSession = result.tools.find((tool) => tool.name === "colab_revoke_session");
   const legacyPing = result.tools.find((tool) => tool.name === "colab_ping");
   const runShell = result.tools.find((tool) => tool.name === "colab_run_shell");
   const writeTool = result.tools.find((tool) => tool.name === "colab_write_file");
@@ -195,6 +198,24 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   const recreateRuntime = result.tools.find((tool) => tool.name === "colab_recreate_runtime");
 
   assert.ok(runnerPing);
+  assert.ok(configSummary);
+  assert.deepEqual(configSummary.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in configSummary, false);
+
+  assert.ok(revokeSession);
+  assert.deepEqual(revokeSession.annotations, {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in revokeSession, false);
+
   assert.equal(legacyPing, undefined);
   assert.deepEqual(runnerPing.annotations, {
     readOnlyHint: true,
@@ -472,6 +493,213 @@ test("colab_status calls the local HTTP handler and returns MCP CallToolResult s
   assert.equal(result.content[0]?.type, "text");
   assert.equal(data.runner_connected, true);
   assert.equal(data.runner_instance_id, "runner_mcp_status");
+});
+
+test("colab_get_config_summary returns sanitized local config data without Worker access", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "colab-mcp-summary-"));
+  const configPath = join(directory, "config.json");
+  const envControllerSecret = "env_controller_secret_should_not_leak";
+  const envRunnerSecret = "env_runner_secret_should_not_leak";
+  const envAdminSecret = "env_admin_secret_should_not_leak";
+  const fileControllerSecret = "file_controller_secret_should_not_leak";
+  const fileRunnerSecret = "file_runner_secret_should_not_leak";
+  const fileAdminSecret = "file_admin_secret_should_not_leak";
+  try {
+    const envSummary = getLocalBridgeConfigSummary({
+      env: {
+        COLAB_MCP_BRIDGE_BASE_URL: "https://env-worker.example",
+        COLAB_MCP_BRIDGE_SESSION_ID: "sess_env_summary",
+        COLAB_MCP_BRIDGE_CONTROLLER_TOKEN: envControllerSecret,
+        COLAB_MCP_BRIDGE_RUNNER_TOKEN: envRunnerSecret,
+        COLAB_MCP_BRIDGE_ADMIN_SECRET: envAdminSecret,
+        COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS: "1",
+      },
+    });
+    const envText = JSON.stringify(envSummary);
+    assert.equal(envSummary.configured, true);
+    assert.equal(envSummary.controller_token_set, true);
+    assert.equal(envSummary.runner_token_set, true);
+    assert.equal(envSummary.admin_secret_set, true);
+    assert.equal(envSummary.enable_dangerous_tools, true);
+    assert.equal(envText.includes(envControllerSecret), false);
+    assert.equal(envText.includes(envRunnerSecret), false);
+    assert.equal(envText.includes(envAdminSecret), false);
+
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        worker_url: "https://file-worker.example",
+        session_id: "sess_file_summary",
+        controller_token: fileControllerSecret,
+        runner_token: fileRunnerSecret,
+        admin_secret: fileAdminSecret,
+        enable_dangerous_tools: true,
+      }),
+      "utf8",
+    );
+    const transport = new InMemoryMcpTransport(
+      new ColabMcpServer({
+        configSummaryLoader: () => getLocalBridgeConfigSummary({ configPath, env: {} }),
+        httpHandler: async () => {
+          throw new Error("config summary should not contact Worker");
+        },
+      }),
+    );
+
+    const response = await send(transport, "tools/call", {
+      name: "colab_get_config_summary",
+      arguments: {},
+    });
+    const result = callToolResult(response);
+    const data = result.structuredContent.data as {
+      configured: boolean;
+      config_source: string;
+      config_path: string;
+      base_url: string;
+      session_id: string;
+      enable_dangerous_tools: boolean;
+      controller_token_set: boolean;
+      runner_token_set: boolean;
+      admin_secret_set: boolean;
+    };
+    const fileText = JSON.stringify(result);
+
+    assert.equal(result.isError, false);
+    assert.equal(data.configured, true);
+    assert.equal(data.config_source, "explicit_file");
+    assert.equal(data.config_path, configPath);
+    assert.equal(data.base_url, "https://file-worker.example");
+    assert.equal(data.session_id, "sess_file_summary");
+    assert.equal(data.enable_dangerous_tools, true);
+    assert.equal(data.controller_token_set, true);
+    assert.equal(data.runner_token_set, true);
+    assert.equal(data.admin_secret_set, true);
+    assert.equal(fileText.includes(fileControllerSecret), false);
+    assert.equal(fileText.includes(fileRunnerSecret), false);
+    assert.equal(fileText.includes(fileAdminSecret), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("colab_get_config_summary reports missing or invalid config as structured data", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "colab-mcp-summary-invalid-"));
+  const missingPath = join(directory, "missing.json");
+  const invalidPath = join(directory, "invalid.json");
+  try {
+    const missingTransport = new InMemoryMcpTransport(
+      new ColabMcpServer({
+        configSummaryLoader: () => getLocalBridgeConfigSummary({ configPath: missingPath, env: {} }),
+      }),
+    );
+    const missing = callToolResult(
+      await send(missingTransport, "tools/call", {
+        name: "colab_get_config_summary",
+        arguments: {},
+      }),
+    );
+    const missingData = missing.structuredContent.data as { configured: boolean; error: string };
+
+    assert.equal(missing.isError, false);
+    assert.equal(missing.structuredContent.ok, true);
+    assert.equal(missingData.configured, false);
+    assert.match(missingData.error, /Missing MCP bridge config/);
+
+    await writeFile(invalidPath, "{", "utf8");
+    const invalidTransport = new InMemoryMcpTransport(
+      new ColabMcpServer({
+        configSummaryLoader: () => getLocalBridgeConfigSummary({ configPath: invalidPath, env: {} }),
+      }),
+    );
+    const invalid = callToolResult(
+      await send(invalidTransport, "tools/call", {
+        name: "colab_get_config_summary",
+        arguments: {},
+      }),
+    );
+    const invalidData = invalid.structuredContent.data as { configured: boolean; error: string };
+
+    assert.equal(invalid.isError, false);
+    assert.equal(invalid.structuredContent.ok, true);
+    assert.equal(invalidData.configured, false);
+    assert.equal(invalidData.error, "MCP bridge config file must contain valid JSON.");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("colab_revoke_session requires confirmation, supports dry run, and clears cached config", async () => {
+  const { handler } = createHarness();
+  const session = await createSession(handler);
+  const requests: string[] = [];
+  let configLoads = 0;
+  const recordingHandler: BridgeHttpHandler = async (request) => {
+    const url = new URL(request.url);
+    requests.push(`${request.method} ${url.pathname}`);
+    return handler(request);
+  };
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      configLoader: () => {
+        configLoads += 1;
+        return serverConfig(session);
+      },
+      httpHandler: recordingHandler,
+    }),
+  );
+
+  const missingConfirmation = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_revoke_session",
+      arguments: {},
+    }),
+  );
+  assert.equal(missingConfirmation.isError, true);
+  assert.equal(missingConfirmation.structuredContent.error?.code, "INVALID_ARGUMENT");
+  assert.equal(configLoads, 0);
+  assert.deepEqual(requests, []);
+
+  const dryRun = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_revoke_session",
+      arguments: { dry_run: true },
+    }),
+  );
+  const dryRunData = dryRun.structuredContent.data as {
+    revoked: boolean;
+    dry_run: boolean;
+    session_id: string;
+  };
+  assert.equal(dryRun.isError, false);
+  assert.equal(dryRunData.revoked, false);
+  assert.equal(dryRunData.dry_run, true);
+  assert.equal(dryRunData.session_id, session.session_id);
+  assert.equal(configLoads, 1);
+  assert.deepEqual(requests, []);
+
+  const live = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_revoke_session",
+      arguments: { confirm_revoke_session: true },
+    }),
+  );
+  assert.equal(live.isError, false);
+  assert.deepEqual(live.structuredContent.data, { revoked: true });
+  assert.deepEqual(requests, [`POST /v1/sessions/${session.session_id}/revoke`]);
+
+  const status = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_status",
+      arguments: {},
+    }),
+  );
+  assert.equal(status.isError, true);
+  assert.equal(status.structuredContent.error?.code, "UNAUTHORIZED");
+  assert.equal(configLoads, 2);
+  assert.deepEqual(requests, [
+    `POST /v1/sessions/${session.session_id}/revoke`,
+    `GET /v1/sessions/${session.session_id}/status`,
+  ]);
 });
 
 test("colab_runner_ping is public and colab_ping remains a callable alias", async () => {

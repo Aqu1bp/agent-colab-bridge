@@ -36,8 +36,10 @@ import {
 import { BridgeHttpClient, type BridgeHttpClientOptions } from "./mcp-client.js";
 import {
   BridgeConfigError,
+  getLocalBridgeConfigSummary,
   loadLocalBridgeConfig,
   type LocalBridgeConfig,
+  type LocalBridgeConfigSummary,
 } from "./mcp-config.js";
 
 export type JsonRpcId = string | number | null;
@@ -69,6 +71,7 @@ export type JsonRpcResponse = JsonRpcSuccessResponse | JsonRpcErrorResponse;
 export interface ColabMcpServerOptions {
   config?: LocalBridgeConfig;
   configLoader?: () => LocalBridgeConfig;
+  configSummaryLoader?: () => LocalBridgeConfigSummary;
   enableDangerousTools?: boolean;
   httpHandler?: BridgeHttpHandler;
   httpClientOptions?: Omit<BridgeHttpClientOptions, "handler">;
@@ -115,6 +118,11 @@ export interface DoctorResultPayload extends LocalCommandResultPayload {
 export interface ColabCliPayload {
   colabConfig?: string;
   timeoutSec: number;
+}
+
+export interface RevokeSessionPayload {
+  dryRun: boolean;
+  confirmRevokeSession: boolean;
 }
 
 export interface ColabRuntimePayload {
@@ -317,6 +325,49 @@ export class ColabMcpServer {
 
       if (!tool.enabledByDefault && !this.isToolEnabledByLocalPolicy(tool.name)) {
         return disabledToolResult(params.name);
+      }
+
+      if (tool.name === "colab_get_config_summary") {
+        const summary = this.getConfigSummary();
+        return callToolSuccess(
+          summary.configured ? "Bridge config summary returned." : "Bridge config is not configured.",
+          summary,
+        );
+      }
+
+      if (tool.name === "colab_revoke_session") {
+        let payload: RevokeSessionPayload;
+        try {
+          payload = normalizeRevokeSessionPayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        if (payload.dryRun) {
+          const config = this.resolveConfig();
+          return callToolSuccess("Session revocation dry run completed.", {
+            revoked: false,
+            dry_run: true,
+            base_url: config.baseUrl,
+            session_id: config.sessionId,
+          });
+        }
+
+        const response = await this.clientRequest((client) => client.revokeSession());
+        if (!response.ok) {
+          return callToolError(
+            response.error ?? bridgeError("INTERNAL_ERROR", "Bridge session revocation failed.", false),
+          );
+        }
+
+        this.config = undefined;
+        return callToolSuccess(
+          "Bridge session revoked. Colab runtime was not stopped.",
+          response.data ?? { revoked: true },
+        );
       }
 
       if (tool.name === "colab_status") {
@@ -764,6 +815,33 @@ export class ColabMcpServer {
     return request(client);
   }
 
+  private getConfigSummary(): LocalBridgeConfigSummary {
+    try {
+      if (this.options.configSummaryLoader) {
+        return this.options.configSummaryLoader();
+      }
+
+      if (this.options.config !== undefined && this.config) {
+        return configSummaryFromResolvedConfig(this.config);
+      }
+
+      return getLocalBridgeConfigSummary();
+    } catch (error) {
+      return {
+        configured: false,
+        config_source: "unknown",
+        legacy_config_used: false,
+        controller_token_set: false,
+        runner_token_set: false,
+        admin_secret_set: false,
+        error:
+          error instanceof BridgeConfigError
+            ? error.message
+            : "MCP bridge config could not be summarized.",
+      };
+    }
+  }
+
   private async runDoctor(payload: DoctorPayload): Promise<DoctorResultPayload> {
     if (this.options.doctor) {
       return this.options.doctor(payload);
@@ -1028,6 +1106,20 @@ function localCommandErrorResult<TData extends LocalCommandResultPayload>(
   };
 }
 
+function configSummaryFromResolvedConfig(config: LocalBridgeConfig): LocalBridgeConfigSummary {
+  return {
+    configured: true,
+    config_source: "server_options",
+    legacy_config_used: false,
+    base_url: config.baseUrl,
+    session_id: config.sessionId,
+    enable_dangerous_tools: config.enableDangerousTools,
+    controller_token_set: true,
+    runner_token_set: false,
+    admin_secret_set: false,
+  };
+}
+
 function normalizeDoctorPayload(args: Record<string, unknown>): DoctorPayload {
   const timeoutSec = optionalNumber(args.timeout_sec, "timeout_sec") ?? DEFAULT_DOCTOR_TIMEOUT_SEC;
   if (timeoutSec <= 0 || timeoutSec > MAX_DOCTOR_TIMEOUT_SEC) {
@@ -1047,6 +1139,24 @@ function normalizeColabCliPayload(args: Record<string, unknown>): ColabCliPayloa
   return {
     colabConfig: optionalString(args.colab_config, "colab_config"),
     timeoutSec: normalizeColabCliTimeout(args.timeout_sec),
+  };
+}
+
+function normalizeRevokeSessionPayload(args: Record<string, unknown>): RevokeSessionPayload {
+  const dryRun = optionalBoolean(args.dry_run, "dry_run") ?? false;
+  const confirmRevokeSession =
+    optionalBoolean(args.confirm_revoke_session, "confirm_revoke_session") ?? false;
+  if (!dryRun && !confirmRevokeSession) {
+    throw bridgeError(
+      "INVALID_ARGUMENT",
+      "confirm_revoke_session must be true for live session revocation. This invalidates the bridge token/session but does not stop the Colab runtime.",
+      false,
+    );
+  }
+
+  return {
+    dryRun,
+    confirmRevokeSession,
   };
 }
 

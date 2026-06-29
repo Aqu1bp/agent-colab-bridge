@@ -144,6 +144,12 @@ developers can run:
 npm run runtime:stop -- --yes
 ```
 
+To invalidate the current bridge session without stopping the Colab VM, call
+`colab_revoke_session` with `confirm_revoke_session: true`. Revocation makes
+the controller and runner tokens unusable for that bridge session, but any
+processes already running in Colab continue until they finish, the runtime is
+stopped, or Colab terminates the VM.
+
 The plugin reads the local config written by setup.
 
 Create editable local config templates only when you want manual setup:
@@ -171,15 +177,33 @@ codex plugin add codex-colab-bridge@codex-colab-bridge
 ```
 
 The plugin contributes the local MCP server, a usage skill, and agent-facing
-setup/recovery tools:
+tools:
 
 ```text
+colab_get_config_summary
 colab_setup_bridge
 colab_runtime_options
 colab_stop_runtime
 colab_recreate_runtime
 colab_reconnect_runner
+colab_revoke_session
+colab_status
+colab_runner_ping
+colab_gpu_status
+colab_list_sessions
+colab_runtime_status
+colab_runtime_url
+colab_upload_file
+colab_download_file
+colab_read_file
+colab_list_jobs
+colab_job_status
+colab_tail_job
 ```
+
+Dangerous remote-code tools are present but disabled by default:
+`colab_run_shell`, `colab_run_python`, `colab_write_file`, `colab_start_job`,
+and `colab_interrupt_job`.
 
 Installing the plugin alone does not deploy infrastructure or create tokens.
 An agent should call `colab_setup_bridge` from any user project when the user
@@ -220,6 +244,11 @@ Colab runtime, installs dependencies, uploads the runner, and starts it. After
 that bootstrap step, MCP tools control the already-live runtime through the
 bridge.
 
+File upload/download tools are local `google-colab-cli` operations between the
+developer machine and the named Colab session. They are not routed through the
+Cloudflare Worker, which is only for control traffic and bounded command/log
+payloads.
+
 ## Threat Model
 
 What the bridge tries to protect:
@@ -243,6 +272,8 @@ What the bridge does not protect:
 - Cloudflare coordinates control traffic; it is not a private artifact store.
 - Google controls Colab VM lifetime, GPU availability, idle policy, and runtime
   duration.
+- Revoking a bridge session invalidates bridge credentials, but does not stop
+  the Colab VM or kill already-running Colab processes.
 
 Operator responsibilities:
 
@@ -258,6 +289,8 @@ Operator responsibilities:
 - Colab jobs do not survive VM deletion or runtime reset.
 - Live job state and logs are runner-owned. If the runner process dies, the
   bridge can only report the last known durable state.
+- Revoked bridge sessions cannot be used for status, commands, or runner
+  reconnects; create a fresh session or recreate the runtime to continue.
 - Large artifacts, datasets, checkpoints, package caches, and full training
   outputs must not go through Cloudflare.
 - GPU type, GPU availability, idle timeout, and maximum runtime duration are not
@@ -266,9 +299,10 @@ Operator responsibilities:
   token once exposed to code running in the Colab runtime.
 - The current implementation supports one active background job per session.
 
-Use `google-colab-cli upload` / `download` or external storage such as Google
+Use `colab_upload_file` / `colab_download_file`, direct
+`google-colab-cli upload` / `download`, or external storage such as Google
 Drive, Google Cloud Storage, Hugging Face Hub, Cloudflare R2, or GitHub Releases
-for large artifacts.
+for artifacts that should not cross Cloudflare.
 
 For Python model jobs, the runner sets `PYTHONUNBUFFERED=1` for child processes
 and runs direct `colab_run_python` snippets with `python -u`. If a framework or
