@@ -1,6 +1,43 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
-__pycache__/
-*.pyc
 !plugins/codex-colab-bridge/dist/
 !plugins/codex-colab-bridge/dist/**
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local secrets and runtime config
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+config.local.json
+*.local.json
+
+# Logs and reports
+*.log
+logs/
+coverage/
+.nyc_output/
+
+# Local caches and databases
+.cache/
+tmp/
+temp/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local archives and OS/editor files
+*.tgz
+*.tar
+*.tar.gz
+*.zip
+.DS_Store

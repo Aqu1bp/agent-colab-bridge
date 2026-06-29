@@ -66,7 +66,7 @@ codex plugin add codex-colab-bridge@codex-colab-bridge
 For a published GitHub repo:
 
 ```bash
-codex plugin marketplace add https://github.com/<owner>/codex-colab-bridge
+codex plugin marketplace add https://github.com/Aqu1bp/colab-mcp-bridge
 codex plugin add codex-colab-bridge@codex-colab-bridge
 ```
 
@@ -172,7 +172,7 @@ codex plugin add codex-colab-bridge@codex-colab-bridge
 For a published GitHub repo, use the repository source instead:
 
 ```bash
-codex plugin marketplace add https://github.com/<owner>/codex-colab-bridge
+codex plugin marketplace add https://github.com/Aqu1bp/colab-mcp-bridge
 codex plugin add codex-colab-bridge@codex-colab-bridge
 ```
 
@@ -536,6 +536,8 @@ the smoke test to verify remote shell execution too.
 - Public docs contain no personal paths, account IDs, session IDs, Worker
   subdomains, or real tokens.
 - `LICENSE`, `SECURITY.md`, `.env.example`, and `config.example.json` are present.
+- `npm pack --dry-run` contains no caches, bytecode, local paths, or generated
+  artifacts other than the packaged plugin build output.
 - Release tags are created only after the fresh clone setup test passes.
 
 ## Current Implementation Notes

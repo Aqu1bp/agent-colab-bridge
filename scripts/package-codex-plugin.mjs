@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, lstatSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -74,6 +74,7 @@ async function copyDirectory(from, to) {
   await cp(resolve(repoRoot, from), resolve(outputRoot, to), {
     recursive: true,
     force: true,
+    filter: shouldPackagePath,
   });
 }
 
@@ -87,4 +88,10 @@ async function writePluginWranglerConfig() {
   const source = await readFile(resolve(repoRoot, "wrangler.toml"), "utf8");
   const pluginConfig = source.replace(/^main = "src\/worker\.ts"$/m, 'main = "dist/src/worker.js"');
   await writeFile(resolve(outputRoot, "wrangler.toml"), pluginConfig);
+}
+
+function shouldPackagePath(sourcePath) {
+  const normalized = relative(repoRoot, sourcePath).split(sep).join("/");
+  const parts = normalized.split("/");
+  return !parts.includes("__pycache__") && !normalized.endsWith(".pyc") && !normalized.endsWith(".pyo");
 }

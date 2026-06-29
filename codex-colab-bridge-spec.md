@@ -1136,10 +1136,9 @@ dangerous_tools_enabled_by_default: false
 ## Open Decisions
 
 1. Which external artifact stores to document for large datasets, checkpoints, and training outputs.
-2. Whether to package the local MCP adapter as a Codex plugin later.
-3. Whether to add a controller WebSocket after the polling flow is reliable.
-4. Whether to add large artifact transfer through R2 after the MVP.
-5. Whether to support multiple active jobs after the single-job model is stable.
+2. Whether to add a controller WebSocket after the polling flow is reliable.
+3. Whether to add large artifact transfer through R2 after the MVP.
+4. Whether to support multiple active jobs after the single-job model is stable.
 
 ## Recommended First Build Slice
 

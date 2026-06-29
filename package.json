@@ -1,9 +1,26 @@
 {
   "name": "codex-colab-bridge",
   "version": "0.1.0",
+  "description": "Use Google Colab runtimes from Codex through a Cloudflare-backed MCP bridge.",
   "private": false,
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aqu1bp/colab-mcp-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Aqu1bp/colab-mcp-bridge/issues"
+  },
+  "homepage": "https://github.com/Aqu1bp/colab-mcp-bridge#readme",
+  "keywords": [
+    "codex",
+    "colab",
+    "mcp",
+    "cloudflare",
+    "gpu",
+    "remote-runtime"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
@@ -27,6 +44,7 @@
     "LICENSE",
     "README.md",
     "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
     "codex-colab-bridge-spec.md",
     "config.example.json",
     "plugins/codex-colab-bridge/",
