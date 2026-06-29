@@ -39,6 +39,10 @@ test("tool metadata declares annotations and output schemas", () => {
   }
 
   assert.equal(toolByName("colab_status")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_runner_ping")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_runner_ping")?.annotations.readOnlyHint, true);
+  assert.equal(toolByName("colab_ping")?.enabledByDefault, true);
+  assert.equal(toolDefinitions.some((tool) => tool.name === "colab_ping"), false);
   assert.equal(toolByName("colab_gpu_status")?.enabledByDefault, true);
   assert.equal(toolByName("colab_gpu_status")?.annotations.readOnlyHint, true);
   assert.equal(toolByName("colab_doctor")?.enabledByDefault, true);
@@ -75,6 +79,10 @@ test("tool metadata declares annotations and output schemas", () => {
   assert.equal(toolByName("colab_read_file")?.annotations.idempotentHint, true);
   assert.equal(toolByName("colab_start_job")?.enabledByDefault, false);
   assert.equal(toolByName("colab_start_job")?.annotations.destructiveHint, true);
+  assert.equal(toolByName("colab_list_jobs")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_list_jobs")?.annotations.readOnlyHint, true);
+  assert.equal(toolByName("colab_job_status")?.enabledByDefault, true);
+  assert.equal(toolByName("colab_job_status")?.annotations.readOnlyHint, true);
   assert.equal(toolByName("colab_tail_job")?.enabledByDefault, true);
   assert.equal(toolByName("colab_tail_job")?.annotations.readOnlyHint, true);
   assert.equal(toolByName("colab_tail_job")?.annotations.idempotentHint, true);

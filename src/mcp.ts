@@ -104,8 +104,8 @@ export const toolDefinitions: ToolDefinition[] = [
     enabledByDefault: true,
   },
   {
-    name: "colab_ping",
-    description: "Test-only authenticated fake runner ping.",
+    name: "colab_runner_ping",
+    description: "Run an authenticated ping through the connected Colab runner.",
     inputSchema: emptyObjectSchema,
     outputSchema: structuredOutputSchema,
     annotations: readOnlyRemoteAnnotations,
@@ -448,6 +448,29 @@ export const toolDefinitions: ToolDefinition[] = [
     enabledByDefault: true,
   },
   {
+    name: "colab_list_jobs",
+    description: "List runner-owned background job summaries from the connected Colab runner.",
+    inputSchema: emptyObjectSchema,
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_job_status",
+    description: "Return one runner-owned background job summary from the connected Colab runner.",
+    inputSchema: {
+      type: "object",
+      required: ["job_id"],
+      properties: {
+        job_id: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+  {
     name: "colab_interrupt_job",
     description: "Interrupt a background job process group in the connected Colab runner when explicitly enabled.",
     inputSchema: {
@@ -470,8 +493,22 @@ export const toolDefinitions: ToolDefinition[] = [
   },
 ];
 
+const hiddenToolAliases: ToolDefinition[] = [
+  {
+    name: "colab_ping",
+    description: "Backward-compatible alias for colab_runner_ping.",
+    inputSchema: emptyObjectSchema,
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+];
+
 export function toolByName(name: string): ToolDefinition | undefined {
-  return toolDefinitions.find((tool) => tool.name === name);
+  return (
+    toolDefinitions.find((tool) => tool.name === name) ??
+    hiddenToolAliases.find((tool) => tool.name === name)
+  );
 }
 
 export function isEnabledDangerousExecutionTool(name: string): boolean {

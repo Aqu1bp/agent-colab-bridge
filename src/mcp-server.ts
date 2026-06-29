@@ -7,12 +7,15 @@ import {
   bridgeError,
   normalizeForegroundRunPayload,
   normalizeInterruptJobPayload,
+  normalizeJobStatusPayload,
+  normalizeListJobsPayload,
   normalizeReadFilePayload,
   normalizeStartJobPayload,
   normalizeTailJobPayload,
   normalizeWriteFilePayload,
   type BridgeError,
   type InterruptJobPayload,
+  type JobStatusCommandPayload,
   type ReadFilePayload,
   type RunPythonPayload,
   type RunShellPayload,
@@ -330,8 +333,8 @@ export class ColabMcpServer {
         return callToolSuccess(runnerConnected ? "Runner connected." : "Runner offline.", response.data);
       }
 
-      if (tool.name === "colab_ping") {
-        const response = await this.clientRequest((client) => client.createPingCommand());
+      if (tool.name === "colab_runner_ping" || tool.name === "colab_ping") {
+        const response = await this.clientRequest((client) => client.createRunnerPingCommand());
         if (!response.ok) {
           return callToolError(response.error ?? bridgeError("INTERNAL_ERROR", "Bridge ping failed.", false));
         }
@@ -675,13 +678,20 @@ export class ColabMcpServer {
 
       if (
         tool.name === "colab_start_job" ||
+        tool.name === "colab_list_jobs" ||
+        tool.name === "colab_job_status" ||
         tool.name === "colab_tail_job" ||
         tool.name === "colab_interrupt_job"
       ) {
-        let payload: StartJobPayload | TailJobPayload | InterruptJobPayload;
+        let payload: StartJobPayload | JobStatusCommandPayload | TailJobPayload | InterruptJobPayload | undefined;
         try {
           if (tool.name === "colab_start_job") {
             payload = normalizeStartJobPayload(params.arguments);
+          } else if (tool.name === "colab_list_jobs") {
+            normalizeListJobsPayload(params.arguments);
+            payload = undefined;
+          } else if (tool.name === "colab_job_status") {
+            payload = normalizeJobStatusPayload(params.arguments);
           } else if (tool.name === "colab_tail_job") {
             payload = normalizeTailJobPayload(params.arguments);
           } else {
@@ -697,6 +707,12 @@ export class ColabMcpServer {
         const response = await this.clientRequest((client) => {
           if (tool.name === "colab_start_job") {
             return client.createStartJobCommand(payload as StartJobPayload);
+          }
+          if (tool.name === "colab_list_jobs") {
+            return client.createListJobsCommand();
+          }
+          if (tool.name === "colab_job_status") {
+            return client.createJobStatusCommand(payload as JobStatusCommandPayload);
           }
           if (tool.name === "colab_tail_job") {
             return client.createTailJobCommand(payload as TailJobPayload);
@@ -717,9 +733,13 @@ export class ColabMcpServer {
         const text =
           tool.name === "colab_start_job"
             ? "Background job started."
-            : tool.name === "colab_tail_job"
-              ? "Background job tail returned."
-              : "Background job interrupt completed.";
+            : tool.name === "colab_list_jobs"
+              ? "Background job list returned."
+              : tool.name === "colab_job_status"
+                ? "Background job status returned."
+                : tool.name === "colab_tail_job"
+                  ? "Background job tail returned."
+                  : "Background job interrupt completed.";
         return callToolSuccess(text, command);
       }
 

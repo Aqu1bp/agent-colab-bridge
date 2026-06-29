@@ -7,12 +7,15 @@ import {
   isDangerousCommandType,
   normalizeForegroundRunPayload,
   normalizeInterruptJobPayload,
+  normalizeJobStatusPayload,
+  normalizeListJobsPayload,
   normalizeReadFilePayload,
   normalizeStartJobPayload,
   normalizeTailJobPayload,
   normalizeWriteFilePayload,
   type BridgeError,
   type InterruptJobPayload,
+  type JobStatusCommandPayload,
   type ReadFilePayload,
   type RunPythonPayload,
   type RunShellPayload,
@@ -440,6 +443,30 @@ function parseCommandInput(
     let jobPayload: StartJobPayload;
     try {
       jobPayload = normalizeStartJobPayload(payload ?? {});
+    } catch (error) {
+      if (isBridgeErrorLike(error)) {
+        throw new HttpRouteError(400, error);
+      }
+      throw error;
+    }
+    normalizedPayload = jobPayload;
+  }
+
+  if (type === "list_jobs") {
+    try {
+      normalizedPayload = normalizeListJobsPayload(payload ?? {});
+    } catch (error) {
+      if (isBridgeErrorLike(error)) {
+        throw new HttpRouteError(400, error);
+      }
+      throw error;
+    }
+  }
+
+  if (type === "job_status") {
+    let jobPayload: JobStatusCommandPayload;
+    try {
+      jobPayload = normalizeJobStatusPayload(payload ?? {});
     } catch (error) {
       if (isBridgeErrorLike(error)) {
         throw new HttpRouteError(400, error);

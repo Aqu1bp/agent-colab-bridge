@@ -3,6 +3,7 @@ import {
   bridgeError,
   type BridgeError,
   type InterruptJobPayload,
+  type JobStatusCommandPayload,
   type ReadFilePayload,
   type RunPythonPayload,
   type RunShellPayload,
@@ -55,6 +56,10 @@ export class BridgeHttpClient {
   }
 
   async createPingCommand(): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.createRunnerPingCommand();
+  }
+
+  async createRunnerPingCommand(): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
     return this.request<BridgeCommandData>(
       "POST",
       `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
@@ -107,6 +112,22 @@ export class BridgeHttpClient {
       "POST",
       `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
       { type: "start_job", payload },
+    );
+  }
+
+  async createListJobsCommand(): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.request<BridgeCommandData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
+      { type: "list_jobs" },
+    );
+  }
+
+  async createJobStatusCommand(payload: JobStatusCommandPayload): Promise<BridgeHttpEnvelope<BridgeCommandData>> {
+    return this.request<BridgeCommandData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.config.sessionId)}/commands`,
+      { type: "job_status", payload },
     );
   }
 

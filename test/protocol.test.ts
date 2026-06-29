@@ -10,6 +10,8 @@ import {
   createResultEnvelope,
   normalizeForegroundRunPayload,
   normalizeInterruptJobPayload,
+  normalizeJobStatusPayload,
+  normalizeListJobsPayload,
   normalizeReadFilePayload,
   normalizeStartJobPayload,
   normalizeTailJobPayload,
@@ -136,8 +138,26 @@ test("protocol helpers support background job command envelopes", () => {
     deadlineAt: "2026-06-28T10:00:30.000Z",
     sentAt: "2026-06-28T10:00:00.000Z",
   });
+  const list = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_list_jobs",
+    type: "list_jobs",
+    payload: {},
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
+  const status = createCommandEnvelope({
+    sessionId: "sess_1",
+    commandId: "cmd_job_status",
+    type: "job_status",
+    payload: { job_id: "job_1" },
+    deadlineAt: "2026-06-28T10:00:30.000Z",
+    sentAt: "2026-06-28T10:00:00.000Z",
+  });
 
   assert.equal(createResultEnvelope({ command: start, ok: true, payload: {} }).type, "start_job_result");
+  assert.equal(createResultEnvelope({ command: list, ok: true, payload: {} }).type, "list_jobs_result");
+  assert.equal(createResultEnvelope({ command: status, ok: true, payload: {} }).type, "job_status_result");
   assert.equal(createResultEnvelope({ command: tail, ok: true, payload: {} }).type, "tail_job_result");
   assert.equal(
     createResultEnvelope({ command: interrupt, ok: true, payload: {} }).type,
@@ -217,6 +237,10 @@ test("background job payload validation applies defaults and caps", () => {
     cursor: 0,
     max_bytes: 20 * 1024,
   });
+  assert.deepEqual(normalizeListJobsPayload({}), {});
+  assert.deepEqual(normalizeJobStatusPayload({ job_id: "job_1" }), {
+    job_id: "job_1",
+  });
   assert.deepEqual(normalizeInterruptJobPayload({ job_id: "job_1" }), {
     job_id: "job_1",
     signal: "SIGTERM",
@@ -241,6 +265,8 @@ test("background job payload validation applies defaults and caps", () => {
       cursor: -1,
     }),
   );
+  assert.throws(() => normalizeListJobsPayload({ unexpected: true }));
+  assert.throws(() => normalizeJobStatusPayload({}));
   assert.throws(() =>
     normalizeInterruptJobPayload({
       job_id: "job_1",

@@ -50,6 +50,8 @@ export type CommandType =
   | "write_file"
   | "read_file"
   | "start_job"
+  | "list_jobs"
+  | "job_status"
   | "tail_job"
   | "interrupt_job";
 
@@ -165,6 +167,10 @@ export interface TailJobPayload {
   max_bytes: number;
 }
 
+export interface JobStatusCommandPayload {
+  job_id: string;
+}
+
 export type InterruptJobSignal = "SIGTERM" | "SIGKILL";
 
 export interface InterruptJobPayload {
@@ -209,6 +215,22 @@ export interface StartJobResultPayload {
   status: "running";
   started_at: string;
 }
+
+export interface JobSummaryPayload {
+  job_id: string;
+  status: JobStatus;
+  started_at: string;
+  exit_code: number | null;
+  interrupted_at: string | null;
+  active: boolean;
+  name?: string;
+}
+
+export interface ListJobsResultPayload {
+  jobs: JobSummaryPayload[];
+}
+
+export type JobStatusResultPayload = JobSummaryPayload;
 
 export interface TailJobResultPayload {
   job_id: string;
@@ -327,6 +349,8 @@ export function assertCommandType(value: string): asserts value is CommandType {
     value !== "write_file" &&
     value !== "read_file" &&
     value !== "start_job" &&
+    value !== "list_jobs" &&
+    value !== "job_status" &&
     value !== "tail_job" &&
     value !== "interrupt_job"
   ) {
@@ -479,6 +503,24 @@ export function normalizeTailJobPayload(payload: unknown): TailJobPayload {
   );
 
   return { job_id: jobId, cursor, max_bytes: maxBytes };
+}
+
+export function normalizeListJobsPayload(payload: unknown): Record<string, never> {
+  const record = normalizeObjectPayload(payload, "list_jobs payload");
+  if (Object.keys(record).length > 0) {
+    throw bridgeError("INVALID_ARGUMENT", "list_jobs payload must not include properties.");
+  }
+  return {};
+}
+
+export function normalizeJobStatusPayload(payload: unknown): JobStatusCommandPayload {
+  const record = normalizeObjectPayload(payload, "job_status payload");
+  const jobId = record.job_id;
+  if (typeof jobId !== "string" || jobId.length === 0) {
+    throw bridgeError("INVALID_ARGUMENT", "job_id must be a non-empty string.");
+  }
+
+  return { job_id: jobId };
 }
 
 export function normalizeInterruptJobPayload(payload: unknown): InterruptJobPayload {

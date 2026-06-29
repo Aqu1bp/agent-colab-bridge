@@ -36,6 +36,16 @@ interface CommandData {
   state_history: string[];
 }
 
+interface JobSummary {
+  job_id: string;
+  status: string;
+  started_at: string;
+  exit_code: number | null;
+  interrupted_at: string | null;
+  active: boolean;
+  name?: string;
+}
+
 function createHarness(options: { enableDangerousTools?: boolean } = {}): {
   broker: SessionBroker;
   handler: BridgeHttpHandler;
@@ -73,6 +83,25 @@ function controllerHeaders(token: string, nonce: string): HeadersInit {
     "X-Bridge-Timestamp": new Date().toISOString(),
     "X-Bridge-Nonce": nonce,
   };
+}
+
+function nodeCommand(script: string): string {
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+}
+
+function assertHttpJobSummary(summary: JobSummary | undefined, jobId: string): void {
+  assert.ok(summary);
+  assert.equal(summary.job_id, jobId);
+  assert.equal(summary.status, "running");
+  assert.equal(typeof summary.started_at, "string");
+  assert.equal(summary.exit_code, null);
+  assert.equal(summary.interrupted_at, null);
+  assert.equal(summary.active, true);
+  assert.equal(summary.name, "http-summary-job");
+  assert.equal("events" in summary, false);
+  assert.equal("stdout" in summary, false);
+  assert.equal("stderr" in summary, false);
+  assert.equal("text" in summary, false);
 }
 
 test("GET /health returns ok envelope", async () => {
@@ -576,6 +605,106 @@ test("tail_job command type is accepted through HTTP without dangerous enablemen
   assert.equal(tail.status, 201);
   assert.equal(tailEnvelope.data?.type, "tail_job");
   assert.equal(tailEnvelope.data?.state, "succeeded");
+});
+
+test("list_jobs and job_status command types are accepted through HTTP without dangerous enablement", async () => {
+  const { broker, handler } = createHarness({ enableDangerousTools: true });
+  const session = await createSession(handler);
+  attachFakeRunnerForTest({
+    broker,
+    sessionId: session.session_id,
+    runnerToken: session.runner_token,
+  });
+  let jobId: string | null = null;
+
+  try {
+    const start = await handler(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+        method: "POST",
+        headers: {
+          ...controllerHeaders(session.controller_token, "summary_setup_start"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          type: "start_job",
+          payload: {
+            command: nodeCommand("console.log('http-secret-log'); setInterval(() => {}, 1000);"),
+            name: "http-summary-job",
+          },
+        }),
+      }),
+    );
+    const startEnvelope = await readEnvelope<CommandData>(start);
+    const startResult = startEnvelope.data?.result_payload as { job_id: string };
+    jobId = startResult.job_id;
+
+    const readOnlyHandler = createBridgeHttpHandler({ broker, adminSecret });
+    const list = await readOnlyHandler(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+        method: "POST",
+        headers: {
+          ...controllerHeaders(session.controller_token, "summary_list"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ type: "list_jobs" }),
+      }),
+    );
+    const listEnvelope = await readEnvelope<CommandData>(list);
+    const listPayload = listEnvelope.data?.result_payload as { jobs: JobSummary[] };
+
+    assert.equal(list.status, 201);
+    assert.equal(listEnvelope.data?.type, "list_jobs");
+    assert.equal(listPayload.jobs.length, 1);
+    assertHttpJobSummary(listPayload.jobs[0], jobId);
+
+    const status = await readOnlyHandler(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+        method: "POST",
+        headers: {
+          ...controllerHeaders(session.controller_token, "summary_status"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ type: "job_status", payload: { job_id: jobId } }),
+      }),
+    );
+    const statusEnvelope = await readEnvelope<CommandData>(status);
+
+    assert.equal(status.status, 201);
+    assert.equal(statusEnvelope.data?.type, "job_status");
+    assertHttpJobSummary(statusEnvelope.data?.result_payload as JobSummary, jobId);
+    assert.equal(JSON.stringify(listPayload).includes("http-secret-log"), false);
+    assert.equal(JSON.stringify(statusEnvelope.data?.result_payload).includes("http-secret-log"), false);
+
+    const invalid = await readOnlyHandler(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+        method: "POST",
+        headers: {
+          ...controllerHeaders(session.controller_token, "summary_status_invalid"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ type: "job_status", payload: {} }),
+      }),
+    );
+    const invalidEnvelope = await readEnvelope(invalid);
+    assert.equal(invalid.status, 400);
+    assert.equal(invalidEnvelope.error?.code, "INVALID_ARGUMENT");
+  } finally {
+    if (jobId) {
+      await handler(
+        new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+          method: "POST",
+          headers: {
+            ...controllerHeaders(session.controller_token, "summary_cleanup"),
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            type: "interrupt_job",
+            payload: { job_id: jobId, signal: "SIGKILL", kill_after_sec: 0 },
+          }),
+        }),
+      );
+    }
+  }
 });
 
 test("unknown command result returns 404", async () => {

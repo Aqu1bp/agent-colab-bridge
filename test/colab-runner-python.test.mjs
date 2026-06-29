@@ -56,3 +56,103 @@ asyncio.run(main())
     await rm(projectRoot, { recursive: true, force: true });
   }
 });
+
+test("Colab runner handles ping and job summaries without log text", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "colab-runner-python-jobs-"));
+  try {
+    const probe = `
+import asyncio
+import importlib.util
+import json
+import os
+import shlex
+import sys
+
+runner_path = sys.argv[1]
+project_root = sys.argv[2]
+os.environ["COLAB_BRIDGE_PROJECT_ROOT"] = project_root
+spec = importlib.util.spec_from_file_location("colab_runner", runner_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules["colab_runner"] = module
+spec.loader.exec_module(module)
+
+def envelope(command_type, payload=None):
+    envelope.counter += 1
+    return {
+        "protocol_version": 1,
+        "session_id": "sess_python",
+        "command_id": f"cmd_{envelope.counter}",
+        "message_id": f"msg_{envelope.counter}",
+        "kind": "command",
+        "type": command_type,
+        "sent_at": "2026-06-29T00:00:00Z",
+        "deadline_at": "2026-06-29T00:00:30Z",
+        "payload": payload or {},
+    }
+envelope.counter = 0
+
+async def main():
+    executable = shlex.quote(sys.executable)
+    command = f"{executable} -u -c " + shlex.quote("import time; print('py-secret-log'); time.sleep(5)")
+    ping = await module.handle_command(envelope("ping"))
+    start = await module.handle_command(envelope("start_job", {
+        "command": command,
+        "name": "py-summary-job",
+        "max_log_bytes": 4096,
+    }))
+    job_id = start["payload"]["job_id"]
+    listed = await module.handle_command(envelope("list_jobs"))
+    status = await module.handle_command(envelope("job_status", {"job_id": job_id}))
+    missing = await module.handle_command(envelope("job_status", {"job_id": "job_missing"}))
+    interrupt = await module.handle_command(envelope("interrupt_job", {
+        "job_id": job_id,
+        "signal": "SIGKILL",
+        "kill_after_sec": 0,
+    }))
+    print(json.dumps({
+        "ping": ping,
+        "start": start,
+        "list": listed,
+        "status": status,
+        "missing": missing,
+        "interrupt": interrupt,
+    }))
+
+asyncio.run(main())
+`;
+    const result = spawnSync("python3", ["-", resolve("python/colab_runner.py"), projectRoot], {
+      cwd: resolve("."),
+      input: probe,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim());
+    const listSummary = output.list.payload.jobs[0];
+    const statusSummary = output.status.payload;
+
+    assert.deepEqual(output.ping.payload, { ok: true, pong: true });
+    assert.equal(output.start.ok, true);
+    assert.equal(output.list.ok, true);
+    assert.equal(output.status.ok, true);
+    assert.equal(listSummary.job_id, output.start.payload.job_id);
+    assert.equal(listSummary.status, "running");
+    assert.equal(listSummary.active, true);
+    assert.equal(listSummary.name, "py-summary-job");
+    assert.equal(listSummary.exit_code, null);
+    assert.equal(listSummary.interrupted_at, null);
+    assert.equal("events" in listSummary, false);
+    assert.equal("stdout" in listSummary, false);
+    assert.equal("stderr" in listSummary, false);
+    assert.equal(statusSummary.job_id, output.start.payload.job_id);
+    assert.equal(statusSummary.name, "py-summary-job");
+    assert.equal(JSON.stringify(output.list.payload).includes("py-secret-log"), false);
+    assert.equal(JSON.stringify(output.status.payload).includes("py-secret-log"), false);
+    assert.equal(output.missing.ok, false);
+    assert.equal(output.missing.error.code, "JOB_NOT_FOUND");
+    assert.equal(output.interrupt.ok, true);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});

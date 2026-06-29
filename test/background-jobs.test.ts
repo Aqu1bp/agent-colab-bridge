@@ -80,6 +80,66 @@ test("fake runner background jobs inherit unbuffered Python environment", async 
   }
 });
 
+test("fake runner lists job summaries without log text", async () => {
+  const harness = await createJobHarness();
+  let jobId: string | null = null;
+  try {
+    const start = await createJobCommand(harness, "start_job", {
+      command: nodeCommand("console.log('secret-log-text'); setInterval(() => {}, 1000);"),
+      name: "summary-job",
+    });
+    const startResult = start.resultPayload as { job_id: string; status: string };
+    jobId = startResult.job_id;
+    assert.equal(start.state, "succeeded");
+
+    await waitForTail(harness, startResult.job_id, 0, (result) =>
+      result.events.some((event) => event.text.includes("secret-log-text")),
+    );
+
+    const list = await createJobCommand(harness, "list_jobs", {});
+    const listPayload = list.resultPayload as { jobs: JobSummary[] };
+    assert.equal(list.state, "succeeded");
+    assert.equal(listPayload.jobs.length, 1);
+    assertJobSummary(listPayload.jobs[0], {
+      jobId: startResult.job_id,
+      status: "running",
+      active: true,
+      name: "summary-job",
+    });
+
+    const status = await createJobCommand(harness, "job_status", {
+      job_id: startResult.job_id,
+    });
+    assert.equal(status.state, "succeeded");
+    assertJobSummary(status.resultPayload as JobSummary, {
+      jobId: startResult.job_id,
+      status: "running",
+      active: true,
+      name: "summary-job",
+    });
+
+    assert.equal(JSON.stringify(list.resultPayload).includes("secret-log-text"), false);
+    assert.equal(JSON.stringify(status.resultPayload).includes("secret-log-text"), false);
+    assert.equal("events" in (status.resultPayload as Record<string, unknown>), false);
+
+    const missing = await createJobCommand(harness, "job_status", {
+      job_id: "job_missing",
+    });
+    assert.equal(missing.state, "failed");
+    assert.equal(missing.error?.code, "JOB_NOT_FOUND");
+    assert.deepEqual(missing.resultPayload, { job_id: "job_missing" });
+  } finally {
+    if (jobId) {
+      await createJobCommand(harness, "interrupt_job", {
+        job_id: jobId,
+        signal: "SIGKILL",
+        kill_after_sec: 0,
+      });
+    }
+    await rm(harness.projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("fake runner rejects a second active background job", async () => {
   const harness = await createJobHarness();
   try {
@@ -174,15 +234,43 @@ interface TailPayload {
   exit_code: number | null;
 }
 
+interface JobSummary {
+  job_id: string;
+  status: string;
+  started_at: string;
+  exit_code: number | null;
+  interrupted_at: string | null;
+  active: boolean;
+  name?: string;
+}
+
 async function createJobCommand(
   harness: JobHarness,
-  type: "start_job" | "tail_job" | "interrupt_job",
+  type: "start_job" | "list_jobs" | "job_status" | "tail_job" | "interrupt_job",
   payload: unknown,
 ): Promise<CommandRow> {
   return harness.broker.createCommand(harness.session.sessionId, harness.controllerAuth(), {
     type,
     payload,
   });
+}
+
+function assertJobSummary(
+  summary: JobSummary | undefined,
+  expected: { jobId: string; status: string; active: boolean; name?: string },
+): void {
+  assert.ok(summary);
+  assert.equal(summary.job_id, expected.jobId);
+  assert.equal(summary.status, expected.status);
+  assert.equal(typeof summary.started_at, "string");
+  assert.equal(summary.exit_code, null);
+  assert.equal(summary.interrupted_at, null);
+  assert.equal(summary.active, expected.active);
+  assert.equal(summary.name, expected.name);
+  assert.equal("events" in summary, false);
+  assert.equal("stdout" in summary, false);
+  assert.equal("stderr" in summary, false);
+  assert.equal("text" in summary, false);
 }
 
 async function waitForTail(
