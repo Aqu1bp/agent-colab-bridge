@@ -41,3 +41,10 @@ test("Codex marketplace plugin payload is a real packaged directory", async () =
   assert.equal(entries.includes("src"), false);
   assert.equal(entries.includes("test"), false);
 });
+
+test("Codex plugin packager includes doctor script for local MCP diagnostics", async () => {
+  const packager = await readFile(resolve("scripts", "package-codex-plugin.mjs"), "utf8");
+
+  assert.match(packager, /copyFile\("scripts\/doctor\.mjs", "scripts\/doctor\.mjs"\)/);
+  assert.match(packager, /doctor: "node scripts\/doctor\.mjs"/);
+});

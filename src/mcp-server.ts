@@ -70,11 +70,63 @@ export interface ColabMcpServerOptions {
   httpHandler?: BridgeHttpHandler;
   httpClientOptions?: Omit<BridgeHttpClientOptions, "handler">;
   packageRoot?: string;
+  doctor?: (payload: DoctorPayload) => Promise<DoctorResultPayload>;
+  listSessions?: (payload: ColabCliPayload) => Promise<LocalCommandResultPayload>;
+  runtimeStatus?: (payload: ColabRuntimePayload) => Promise<LocalCommandResultPayload>;
+  runtimeUrl?: (payload: ColabRuntimePayload) => Promise<LocalCommandResultPayload>;
+  uploadFile?: (payload: ColabFileTransferPayload) => Promise<LocalCommandResultPayload>;
+  downloadFile?: (payload: ColabFileTransferPayload) => Promise<LocalCommandResultPayload>;
   reconnectRunner?: (payload: ReconnectRunnerPayload) => Promise<ReconnectRunnerResultPayload>;
   setupBridge?: (payload: SetupBridgePayload) => Promise<LocalCommandResultPayload>;
   runtimeOptions?: (payload: RuntimeOptionsPayload) => Promise<RuntimeOptionsResultPayload>;
   stopRuntime?: (payload: StopRuntimePayload) => Promise<LocalCommandResultPayload>;
   recreateRuntime?: (payload: RecreateRuntimePayload) => Promise<LocalCommandResultPayload>;
+}
+
+export interface DoctorPayload {
+  configPath?: string;
+  baseUrl?: string;
+  skipNetwork: boolean;
+  requireNetwork: boolean;
+  timeoutSec: number;
+}
+
+export interface DoctorCheckPayload {
+  status: string;
+  name: string;
+  message: string;
+}
+
+export interface DoctorSummaryPayload {
+  pass: number;
+  warn: number;
+  fail: number;
+}
+
+export interface DoctorResultPayload extends LocalCommandResultPayload {
+  ok?: boolean;
+  summary?: DoctorSummaryPayload;
+  checks?: DoctorCheckPayload[];
+}
+
+export interface ColabCliPayload {
+  colabConfig?: string;
+  timeoutSec: number;
+}
+
+export interface ColabRuntimePayload {
+  colabSession: string;
+  colabConfig?: string;
+  timeoutSec: number;
+}
+
+export interface ColabFileTransferPayload {
+  localPath: string;
+  remotePath: string;
+  colabSession: string;
+  colabConfig?: string;
+  timeoutSec: number;
+  dryRun: boolean;
 }
 
 export interface ReconnectRunnerPayload {
@@ -168,6 +220,13 @@ export interface LocalCommandResultPayload {
   dry_run: boolean;
 }
 
+const DEFAULT_COLAB_SESSION_NAME = "codex-colab-bridge";
+const DEFAULT_DOCTOR_TIMEOUT_SEC = 120;
+const MAX_DOCTOR_TIMEOUT_SEC = 300;
+const DEFAULT_COLAB_CLI_TIMEOUT_SEC = 120;
+const MAX_COLAB_CLI_TIMEOUT_SEC = 300;
+const DEFAULT_COLAB_TRANSFER_TIMEOUT_SEC = 300;
+const MAX_COLAB_TRANSFER_TIMEOUT_SEC = 1800;
 const DEFAULT_RECONNECT_TIMEOUT_SEC = 60;
 const MAX_RECONNECT_TIMEOUT_SEC = 300;
 const DEFAULT_OPERATION_TIMEOUT_SEC = 900;
@@ -299,6 +358,111 @@ export class ColabMcpServer {
         }
 
         return callToolSuccess("GPU status command succeeded.", command);
+      }
+
+      if (tool.name === "colab_doctor") {
+        let payload: DoctorPayload;
+        try {
+          payload = normalizeDoctorPayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const result = await this.runDoctor(payload);
+        if (result.exit_code !== 0 || result.timed_out) {
+          return localCommandErrorResult(
+            result,
+            `Colab doctor failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`,
+          );
+        }
+
+        return callToolSuccess("Colab doctor completed.", result);
+      }
+
+      if (tool.name === "colab_list_sessions") {
+        let payload: ColabCliPayload;
+        try {
+          payload = normalizeColabCliPayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const result = await this.runListSessions(payload);
+        if (result.exit_code !== 0 || result.timed_out) {
+          return localCommandErrorResult(
+            result,
+            `Colab sessions list failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`,
+          );
+        }
+
+        return callToolSuccess("Colab sessions returned.", result);
+      }
+
+      if (tool.name === "colab_runtime_status" || tool.name === "colab_runtime_url") {
+        let payload: ColabRuntimePayload;
+        try {
+          payload = normalizeColabRuntimePayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const result =
+          tool.name === "colab_runtime_status"
+            ? await this.runRuntimeStatus(payload)
+            : await this.runRuntimeUrl(payload);
+        if (result.exit_code !== 0 || result.timed_out) {
+          const label = tool.name === "colab_runtime_status" ? "status" : "URL";
+          return localCommandErrorResult(
+            result,
+            `Colab runtime ${label} failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`,
+          );
+        }
+
+        return callToolSuccess(
+          tool.name === "colab_runtime_status" ? "Colab runtime status returned." : "Colab runtime URL returned.",
+          result,
+        );
+      }
+
+      if (tool.name === "colab_upload_file" || tool.name === "colab_download_file") {
+        let payload: ColabFileTransferPayload;
+        try {
+          payload = normalizeColabFileTransferPayload(params.arguments);
+        } catch (error) {
+          if (isBridgeErrorLike(error)) {
+            return callToolError(error);
+          }
+          throw error;
+        }
+
+        const result =
+          tool.name === "colab_upload_file"
+            ? await this.runUploadFile(payload)
+            : await this.runDownloadFile(payload);
+        if (result.exit_code !== 0 || result.timed_out) {
+          const label = tool.name === "colab_upload_file" ? "upload" : "download";
+          return localCommandErrorResult(
+            result,
+            `Colab file ${label} failed${result.exit_code === null ? "" : ` with exit code ${result.exit_code}`}.`,
+          );
+        }
+
+        const label = tool.name === "colab_upload_file" ? "upload" : "download";
+        return callToolSuccess(
+          payload.dryRun
+            ? `Colab file ${label} dry run completed.`
+            : `Colab file ${label} completed.`,
+          result,
+        );
       }
 
       if (tool.name === "colab_reconnect_runner") {
@@ -580,6 +744,54 @@ export class ColabMcpServer {
     return request(client);
   }
 
+  private async runDoctor(payload: DoctorPayload): Promise<DoctorResultPayload> {
+    if (this.options.doctor) {
+      return this.options.doctor(payload);
+    }
+
+    return runDoctorScript(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
+  private async runListSessions(payload: ColabCliPayload): Promise<LocalCommandResultPayload> {
+    if (this.options.listSessions) {
+      return this.options.listSessions(payload);
+    }
+
+    return runListSessionsCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
+  private async runRuntimeStatus(payload: ColabRuntimePayload): Promise<LocalCommandResultPayload> {
+    if (this.options.runtimeStatus) {
+      return this.options.runtimeStatus(payload);
+    }
+
+    return runRuntimeStatusCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
+  private async runRuntimeUrl(payload: ColabRuntimePayload): Promise<LocalCommandResultPayload> {
+    if (this.options.runtimeUrl) {
+      return this.options.runtimeUrl(payload);
+    }
+
+    return runRuntimeUrlCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
+  private async runUploadFile(payload: ColabFileTransferPayload): Promise<LocalCommandResultPayload> {
+    if (this.options.uploadFile) {
+      return this.options.uploadFile(payload);
+    }
+
+    return runUploadFileCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
+  private async runDownloadFile(payload: ColabFileTransferPayload): Promise<LocalCommandResultPayload> {
+    if (this.options.downloadFile) {
+      return this.options.downloadFile(payload);
+    }
+
+    return runDownloadFileCommand(payload, this.options.packageRoot ?? PACKAGE_ROOT);
+  }
+
   private async runReconnectRunner(payload: ReconnectRunnerPayload): Promise<ReconnectRunnerResultPayload> {
     if (this.options.reconnectRunner) {
       return this.options.reconnectRunner(payload);
@@ -780,6 +992,63 @@ function isBridgeErrorLike(value: unknown): value is BridgeError {
   );
 }
 
+function localCommandErrorResult<TData extends LocalCommandResultPayload>(
+  data: TData,
+  message: string,
+): CallToolResult<TData> {
+  const error = bridgeError("INTERNAL_ERROR", message, true);
+  return {
+    content: [{ type: "text", text: `${error.code}: ${error.message}` }],
+    structuredContent: {
+      ok: false,
+      data,
+      error,
+    },
+    isError: true,
+  };
+}
+
+function normalizeDoctorPayload(args: Record<string, unknown>): DoctorPayload {
+  const timeoutSec = optionalNumber(args.timeout_sec, "timeout_sec") ?? DEFAULT_DOCTOR_TIMEOUT_SEC;
+  if (timeoutSec <= 0 || timeoutSec > MAX_DOCTOR_TIMEOUT_SEC) {
+    throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_DOCTOR_TIMEOUT_SEC}.`, false);
+  }
+
+  return {
+    configPath: optionalString(args.config, "config"),
+    baseUrl: optionalString(args.base_url, "base_url"),
+    skipNetwork: optionalBoolean(args.skip_network, "skip_network") ?? false,
+    requireNetwork: optionalBoolean(args.require_network, "require_network") ?? false,
+    timeoutSec,
+  };
+}
+
+function normalizeColabCliPayload(args: Record<string, unknown>): ColabCliPayload {
+  return {
+    colabConfig: optionalString(args.colab_config, "colab_config"),
+    timeoutSec: normalizeColabCliTimeout(args.timeout_sec),
+  };
+}
+
+function normalizeColabRuntimePayload(args: Record<string, unknown>): ColabRuntimePayload {
+  return {
+    colabSession: optionalString(args.colab_session, "colab_session") ?? DEFAULT_COLAB_SESSION_NAME,
+    colabConfig: optionalString(args.colab_config, "colab_config"),
+    timeoutSec: normalizeColabCliTimeout(args.timeout_sec),
+  };
+}
+
+function normalizeColabFileTransferPayload(args: Record<string, unknown>): ColabFileTransferPayload {
+  return {
+    localPath: requiredString(args.local_path, "local_path"),
+    remotePath: requiredString(args.remote_path, "remote_path"),
+    colabSession: optionalString(args.colab_session, "colab_session") ?? DEFAULT_COLAB_SESSION_NAME,
+    colabConfig: optionalString(args.colab_config, "colab_config"),
+    timeoutSec: normalizeColabTransferTimeout(args.timeout_sec),
+    dryRun: optionalBoolean(args.dry_run, "dry_run") ?? false,
+  };
+}
+
 function normalizeReconnectRunnerPayload(args: Record<string, unknown>): ReconnectRunnerPayload {
   const colabSession = optionalString(args.colab_session, "colab_session");
   const colabConfig = optionalString(args.colab_config, "colab_config");
@@ -903,12 +1172,36 @@ function normalizeRecreateRuntimePayload(args: Record<string, unknown>): Recreat
   };
 }
 
+function normalizeColabCliTimeout(value: unknown): number {
+  const timeoutSec = optionalNumber(value, "timeout_sec") ?? DEFAULT_COLAB_CLI_TIMEOUT_SEC;
+  if (timeoutSec <= 0 || timeoutSec > MAX_COLAB_CLI_TIMEOUT_SEC) {
+    throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_COLAB_CLI_TIMEOUT_SEC}.`, false);
+  }
+  return timeoutSec;
+}
+
+function normalizeColabTransferTimeout(value: unknown): number {
+  const timeoutSec = optionalNumber(value, "timeout_sec") ?? DEFAULT_COLAB_TRANSFER_TIMEOUT_SEC;
+  if (timeoutSec <= 0 || timeoutSec > MAX_COLAB_TRANSFER_TIMEOUT_SEC) {
+    throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${MAX_COLAB_TRANSFER_TIMEOUT_SEC}.`, false);
+  }
+  return timeoutSec;
+}
+
 function normalizeOperationTimeout(value: unknown, maxTimeoutSec: number): number {
   const timeoutSec = optionalNumber(value, "timeout_sec") ?? DEFAULT_OPERATION_TIMEOUT_SEC;
   if (timeoutSec <= 0 || timeoutSec > maxTimeoutSec) {
     throw bridgeError("INVALID_ARGUMENT", `timeout_sec must be between 1 and ${maxTimeoutSec}.`, false);
   }
   return timeoutSec;
+}
+
+function requiredString(value: unknown, label: string): string {
+  const output = optionalString(value, label);
+  if (!output) {
+    throw bridgeError("INVALID_ARGUMENT", `${label} is required.`, false);
+  }
+  return output;
 }
 
 function optionalString(value: unknown, label: string): string | undefined {
@@ -939,6 +1232,200 @@ function optionalBoolean(value: unknown, label: string): boolean | undefined {
     throw bridgeError("INVALID_ARGUMENT", `${label} must be a boolean.`, false);
   }
   return value;
+}
+
+async function runDoctorScript(
+  payload: DoctorPayload,
+  packageRoot: string,
+): Promise<DoctorResultPayload> {
+  const command = [
+    process.execPath,
+    "scripts/doctor.mjs",
+    "--json",
+    ...(payload.configPath ? ["--config", payload.configPath] : []),
+    ...(payload.baseUrl ? ["--base-url", payload.baseUrl] : []),
+    ...(payload.skipNetwork ? ["--skip-network"] : []),
+    ...(payload.requireNetwork ? ["--require-network"] : []),
+  ];
+  const result = await runLocalCommand(command, {
+    packageRoot,
+    timeoutSec: payload.timeoutSec,
+    dryRun: false,
+  });
+
+  const parsed = parseDoctorJson(result.stdout);
+  return {
+    ...result,
+    ...parsed,
+  };
+}
+
+function runListSessionsCommand(
+  payload: ColabCliPayload,
+  packageRoot: string,
+): Promise<LocalCommandResultPayload> {
+  return runLocalCommand(
+    [...colabCliBaseCommand(payload.colabConfig), "sessions"],
+    {
+      packageRoot,
+      timeoutSec: payload.timeoutSec,
+      dryRun: false,
+    },
+  );
+}
+
+function runRuntimeStatusCommand(
+  payload: ColabRuntimePayload,
+  packageRoot: string,
+): Promise<LocalCommandResultPayload> {
+  return runLocalCommand(
+    [...colabCliBaseCommand(payload.colabConfig), "status", "-s", payload.colabSession],
+    {
+      packageRoot,
+      timeoutSec: payload.timeoutSec,
+      dryRun: false,
+    },
+  );
+}
+
+function runRuntimeUrlCommand(
+  payload: ColabRuntimePayload,
+  packageRoot: string,
+): Promise<LocalCommandResultPayload> {
+  return runLocalCommand(
+    [...colabCliBaseCommand(payload.colabConfig), "url", "-s", payload.colabSession],
+    {
+      packageRoot,
+      timeoutSec: payload.timeoutSec,
+      dryRun: false,
+    },
+  );
+}
+
+function runUploadFileCommand(
+  payload: ColabFileTransferPayload,
+  packageRoot: string,
+): Promise<LocalCommandResultPayload> {
+  const command = [
+    ...colabCliBaseCommand(payload.colabConfig),
+    "upload",
+    "-s",
+    payload.colabSession,
+    payload.localPath,
+    payload.remotePath,
+  ];
+  return runFileTransferCommand(command, {
+    packageRoot,
+    timeoutSec: payload.timeoutSec,
+    dryRun: payload.dryRun,
+    dryRunMessage: "Dry run only. No file was uploaded through google-colab-cli.",
+  });
+}
+
+function runDownloadFileCommand(
+  payload: ColabFileTransferPayload,
+  packageRoot: string,
+): Promise<LocalCommandResultPayload> {
+  const command = [
+    ...colabCliBaseCommand(payload.colabConfig),
+    "download",
+    "-s",
+    payload.colabSession,
+    payload.remotePath,
+    payload.localPath,
+  ];
+  return runFileTransferCommand(command, {
+    packageRoot,
+    timeoutSec: payload.timeoutSec,
+    dryRun: payload.dryRun,
+    dryRunMessage: "Dry run only. No file was downloaded through google-colab-cli.",
+  });
+}
+
+function colabCliBaseCommand(colabConfig?: string): string[] {
+  return [
+    "uvx",
+    "--from",
+    "google-colab-cli",
+    "colab",
+    ...(colabConfig ? ["--config", colabConfig] : []),
+  ];
+}
+
+function runFileTransferCommand(
+  command: string[],
+  options: {
+    packageRoot: string;
+    timeoutSec: number;
+    dryRun: boolean;
+    dryRunMessage: string;
+  },
+): Promise<LocalCommandResultPayload> {
+  if (options.dryRun) {
+    return Promise.resolve({
+      command,
+      stdout: `${options.dryRunMessage}\n`,
+      stderr: "",
+      exit_code: 0,
+      duration_ms: 0,
+      timed_out: false,
+      truncated: false,
+      dry_run: true,
+    });
+  }
+
+  return runLocalCommand(command, {
+    packageRoot: options.packageRoot,
+    timeoutSec: options.timeoutSec,
+    dryRun: false,
+  });
+}
+
+function parseDoctorJson(stdout: string): Pick<DoctorResultPayload, "ok" | "summary" | "checks"> {
+  try {
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const output: Pick<DoctorResultPayload, "ok" | "summary" | "checks"> = {};
+    if (typeof parsed.ok === "boolean") {
+      output.ok = parsed.ok;
+    }
+    if (isDoctorSummary(parsed.summary)) {
+      output.summary = parsed.summary;
+    }
+    if (Array.isArray(parsed.checks)) {
+      output.checks = parsed.checks.filter(isDoctorCheck);
+    }
+    return output;
+  } catch {
+    return {};
+  }
+}
+
+function isDoctorSummary(value: unknown): value is DoctorSummaryPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.pass === "number" &&
+    typeof record.warn === "number" &&
+    typeof record.fail === "number"
+  );
+}
+
+function isDoctorCheck(value: unknown): value is DoctorCheckPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.status === "string" &&
+    typeof record.name === "string" &&
+    typeof record.message === "string"
+  );
 }
 
 function runReconnectRunnerScript(

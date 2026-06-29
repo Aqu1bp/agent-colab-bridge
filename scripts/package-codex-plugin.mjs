@@ -25,6 +25,7 @@ await copyFile("LICENSE", "LICENSE");
 await copyFile("README.md", "README.md");
 await copyFile("SECURITY.md", "SECURITY.md");
 await copyFile("scripts/local-bridge-common.mjs", "scripts/local-bridge-common.mjs");
+await copyFile("scripts/doctor.mjs", "scripts/doctor.mjs");
 await copyFile("scripts/mcp-entry.mjs", "scripts/mcp-entry.mjs");
 await copyFile("scripts/colab-reconnect-runner.py", "scripts/colab-reconnect-runner.py");
 await copyFile("scripts/reconnect-runner.mjs", "scripts/reconnect-runner.mjs");
@@ -47,6 +48,7 @@ const pluginPackage = {
   engines: sourcePackage.engines,
   scripts: {
     "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
+    doctor: "node scripts/doctor.mjs",
     "runner:reconnect": "node scripts/reconnect-runner.mjs",
     "runtime:options": "node scripts/runtime-options.mjs",
     "runtime:recreate": "node scripts/recreate-runtime.mjs",

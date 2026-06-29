@@ -136,6 +136,12 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   const startJob = result.tools.find((tool) => tool.name === "colab_start_job");
   const tailJob = result.tools.find((tool) => tool.name === "colab_tail_job");
   const interruptJob = result.tools.find((tool) => tool.name === "colab_interrupt_job");
+  const doctor = result.tools.find((tool) => tool.name === "colab_doctor");
+  const listSessions = result.tools.find((tool) => tool.name === "colab_list_sessions");
+  const runtimeStatus = result.tools.find((tool) => tool.name === "colab_runtime_status");
+  const runtimeUrl = result.tools.find((tool) => tool.name === "colab_runtime_url");
+  const uploadFile = result.tools.find((tool) => tool.name === "colab_upload_file");
+  const downloadFile = result.tools.find((tool) => tool.name === "colab_download_file");
   const reconnectRunner = result.tools.find((tool) => tool.name === "colab_reconnect_runner");
   const setupBridge = result.tools.find((tool) => tool.name === "colab_setup_bridge");
   const runtimeOptions = result.tools.find((tool) => tool.name === "colab_runtime_options");
@@ -232,6 +238,74 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
     openWorldHint: true,
   });
   assert.equal("enabledByDefault" in interruptJob, false);
+
+  assert.ok(doctor);
+  const doctorSchema = doctor.inputSchema as {
+    properties: Record<string, { default?: unknown; maximum?: number }>;
+  };
+  assert.equal(doctorSchema.properties.skip_network?.default, false);
+  assert.equal(doctorSchema.properties.require_network?.default, false);
+  assert.equal(doctorSchema.properties.timeout_sec?.default, 120);
+  assert.equal(doctorSchema.properties.timeout_sec?.maximum, 300);
+  assert.deepEqual(doctor.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in doctor, false);
+
+  assert.ok(listSessions);
+  assert.deepEqual(listSessions.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in listSessions, false);
+
+  assert.ok(runtimeStatus);
+  assert.equal(
+    (runtimeStatus.inputSchema as { properties: Record<string, { default?: unknown }> }).properties.colab_session
+      ?.default,
+    "codex-colab-bridge",
+  );
+  assert.deepEqual(runtimeStatus.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in runtimeStatus, false);
+
+  assert.ok(runtimeUrl);
+  assert.deepEqual(runtimeUrl.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in runtimeUrl, false);
+
+  assert.ok(uploadFile);
+  assert.deepEqual((uploadFile.inputSchema as { required: string[] }).required, ["local_path", "remote_path"]);
+  assert.deepEqual(uploadFile.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in uploadFile, false);
+
+  assert.ok(downloadFile);
+  assert.deepEqual((downloadFile.inputSchema as { required: string[] }).required, ["remote_path", "local_path"]);
+  assert.deepEqual(downloadFile.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  });
+  assert.equal("enabledByDefault" in downloadFile, false);
 
   assert.ok(reconnectRunner);
   const reconnectSchema = reconnectRunner.inputSchema as {
@@ -371,6 +445,323 @@ test("colab_gpu_status creates a gpu_status command and returns the serialized c
   assert.equal(data.result_payload.available, true);
   assert.equal(data.result_payload.source, "fake");
   assert.equal(data.result_payload.gpus[0]?.name, "Fake Colab GPU");
+});
+
+test("colab_doctor runs locally without bridge config and returns parsed checks", async () => {
+  const payloads: unknown[] = [];
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      doctor: async (payload) => {
+        payloads.push(payload);
+        return {
+          command: ["node", "scripts/doctor.mjs", "--json", "--skip-network"],
+          stdout: JSON.stringify({
+            ok: true,
+            summary: { pass: 1, warn: 0, fail: 0 },
+            checks: [{ status: "pass", name: "node", message: "Node is supported." }],
+          }),
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 4,
+          timed_out: false,
+          truncated: false,
+          dry_run: false,
+          ok: true,
+          summary: { pass: 1, warn: 0, fail: 0 },
+          checks: [{ status: "pass", name: "node", message: "Node is supported." }],
+        };
+      },
+    }),
+  );
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_doctor",
+    arguments: {
+      config: "/tmp/bridge.json",
+      base_url: "https://bridge.test",
+      skip_network: true,
+      require_network: false,
+      timeout_sec: 45,
+    },
+  });
+  const result = callToolResult(response);
+  const data = result.structuredContent.data as {
+    command: string[];
+    ok: boolean;
+    checks: Array<{ status: string; name: string; message: string }>;
+  };
+
+  assert.equal(result.isError, false);
+  assert.deepEqual(data.command, ["node", "scripts/doctor.mjs", "--json", "--skip-network"]);
+  assert.equal(data.ok, true);
+  assert.equal(data.checks[0]?.name, "node");
+  assert.deepEqual(payloads, [
+    {
+      configPath: "/tmp/bridge.json",
+      baseUrl: "https://bridge.test",
+      skipNetwork: true,
+      requireNetwork: false,
+      timeoutSec: 45,
+    },
+  ]);
+});
+
+test("colab_doctor includes command data when local checks fail", async () => {
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      doctor: async () => ({
+        command: ["node", "scripts/doctor.mjs", "--json"],
+        stdout: JSON.stringify({
+          ok: false,
+          summary: { pass: 0, warn: 0, fail: 1 },
+          checks: [{ status: "fail", name: "node", message: "Node is too old." }],
+        }),
+        stderr: "",
+        exit_code: 1,
+        duration_ms: 4,
+        timed_out: false,
+        truncated: false,
+        dry_run: false,
+        ok: false,
+        summary: { pass: 0, warn: 0, fail: 1 },
+        checks: [{ status: "fail", name: "node", message: "Node is too old." }],
+      }),
+    }),
+  );
+
+  const response = await send(transport, "tools/call", {
+    name: "colab_doctor",
+    arguments: {},
+  });
+  const result = callToolResult(response);
+  const data = result.structuredContent.data as {
+    command: string[];
+    checks: Array<{ status: string }>;
+  };
+
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error?.code, "INTERNAL_ERROR");
+  assert.deepEqual(data.command, ["node", "scripts/doctor.mjs", "--json"]);
+  assert.equal(data.checks[0]?.status, "fail");
+});
+
+test("Colab CLI state tools run locally without bridge config", async () => {
+  const payloads: Record<string, unknown[]> = {
+    listSessions: [],
+    runtimeStatus: [],
+    runtimeUrl: [],
+  };
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      listSessions: async (payload) => {
+        payloads.listSessions.push(payload);
+        return {
+          command: ["uvx", "--from", "google-colab-cli", "colab", "--config", "/tmp/colab.json", "sessions"],
+          stdout: "session-a\n",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 5,
+          timed_out: false,
+          truncated: false,
+          dry_run: false,
+        };
+      },
+      runtimeStatus: async (payload) => {
+        payloads.runtimeStatus.push(payload);
+        return {
+          command: ["uvx", "--from", "google-colab-cli", "colab", "status", "-s", "named"],
+          stdout: "running\n",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 5,
+          timed_out: false,
+          truncated: false,
+          dry_run: false,
+        };
+      },
+      runtimeUrl: async (payload) => {
+        payloads.runtimeUrl.push(payload);
+        return {
+          command: ["uvx", "--from", "google-colab-cli", "colab", "url", "-s", "codex-colab-bridge"],
+          stdout: "https://colab.research.google.com/drive/test\n",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 5,
+          timed_out: false,
+          truncated: false,
+          dry_run: false,
+        };
+      },
+    }),
+  );
+
+  const list = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_list_sessions",
+      arguments: { colab_config: "/tmp/colab.json", timeout_sec: 20 },
+    }),
+  );
+  const status = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_runtime_status",
+      arguments: { colab_session: "named", timeout_sec: 21 },
+    }),
+  );
+  const url = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_runtime_url",
+      arguments: {},
+    }),
+  );
+
+  assert.equal(list.isError, false);
+  assert.equal(status.isError, false);
+  assert.equal(url.isError, false);
+  assert.deepEqual(payloads, {
+    listSessions: [{ colabConfig: "/tmp/colab.json", timeoutSec: 20 }],
+    runtimeStatus: [{ colabSession: "named", colabConfig: undefined, timeoutSec: 21 }],
+    runtimeUrl: [{ colabSession: "codex-colab-bridge", colabConfig: undefined, timeoutSec: 120 }],
+  });
+});
+
+test("Colab CLI transfer tools run locally without bridge config", async () => {
+  const payloads: Record<string, unknown[]> = {
+    uploadFile: [],
+    downloadFile: [],
+  };
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      uploadFile: async (payload) => {
+        payloads.uploadFile.push(payload);
+        return {
+          command: ["uvx", "--from", "google-colab-cli", "colab", "upload", "-s", "named", "local.txt", "/content/remote.txt"],
+          stdout: "Dry run only. No file was uploaded through google-colab-cli.\n",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 0,
+          timed_out: false,
+          truncated: false,
+          dry_run: payload.dryRun,
+        };
+      },
+      downloadFile: async (payload) => {
+        payloads.downloadFile.push(payload);
+        return {
+          command: ["uvx", "--from", "google-colab-cli", "colab", "download", "-s", "codex-colab-bridge", "/content/out.txt", "out.txt"],
+          stdout: "downloaded\n",
+          stderr: "",
+          exit_code: 0,
+          duration_ms: 7,
+          timed_out: false,
+          truncated: false,
+          dry_run: payload.dryRun,
+        };
+      },
+    }),
+  );
+
+  const upload = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_upload_file",
+      arguments: {
+        local_path: "local.txt",
+        remote_path: "/content/remote.txt",
+        colab_session: "named",
+        dry_run: true,
+        timeout_sec: 300,
+      },
+    }),
+  );
+  const download = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_download_file",
+      arguments: {
+        remote_path: "/content/out.txt",
+        local_path: "out.txt",
+        timeout_sec: 301,
+      },
+    }),
+  );
+
+  assert.equal(upload.isError, false);
+  assert.equal(download.isError, false);
+  assert.deepEqual(payloads, {
+    uploadFile: [
+      {
+        localPath: "local.txt",
+        remotePath: "/content/remote.txt",
+        colabSession: "named",
+        colabConfig: undefined,
+        timeoutSec: 300,
+        dryRun: true,
+      },
+    ],
+    downloadFile: [
+      {
+        localPath: "out.txt",
+        remotePath: "/content/out.txt",
+        colabSession: "codex-colab-bridge",
+        colabConfig: undefined,
+        timeoutSec: 301,
+        dryRun: false,
+      },
+    ],
+  });
+});
+
+test("new local Colab tools validate arguments before running", async () => {
+  let runs = 0;
+  const transport = new InMemoryMcpTransport(
+    new ColabMcpServer({
+      doctor: async () => {
+        runs += 1;
+        throw new Error("should not run");
+      },
+      runtimeStatus: async () => {
+        runs += 1;
+        throw new Error("should not run");
+      },
+      uploadFile: async () => {
+        runs += 1;
+        throw new Error("should not run");
+      },
+      downloadFile: async () => {
+        runs += 1;
+        throw new Error("should not run");
+      },
+    }),
+  );
+
+  const doctor = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_doctor",
+      arguments: { timeout_sec: 0 },
+    }),
+  );
+  const status = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_runtime_status",
+      arguments: { colab_session: "" },
+    }),
+  );
+  const upload = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_upload_file",
+      arguments: { local_path: "local.txt" },
+    }),
+  );
+  const download = callToolResult(
+    await send(transport, "tools/call", {
+      name: "colab_download_file",
+      arguments: { remote_path: "/content/out.txt", local_path: "out.txt", timeout_sec: 1801 },
+    }),
+  );
+
+  assert.equal(doctor.structuredContent.error?.code, "INVALID_ARGUMENT");
+  assert.equal(status.structuredContent.error?.code, "INVALID_ARGUMENT");
+  assert.equal(upload.structuredContent.error?.code, "INVALID_ARGUMENT");
+  assert.equal(download.structuredContent.error?.code, "INVALID_ARGUMENT");
+  assert.equal(runs, 0);
 });
 
 test("colab_reconnect_runner runs locally without bridge config", async () => {

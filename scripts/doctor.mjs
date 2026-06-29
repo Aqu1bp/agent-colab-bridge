@@ -31,6 +31,10 @@ export function parseDoctorArgs(argv) {
       flags.requireNetwork = true;
       continue;
     }
+    if (arg === "--json") {
+      flags.json = true;
+      continue;
+    }
     if (!arg.startsWith("--")) {
       throw new Error(`Unexpected positional argument: ${arg}`);
     }
@@ -57,6 +61,7 @@ export function loadDoctorOptions({
   }
   return {
     help: false,
+    json: flags.json === true,
     configPath: resolvePath(firstString(flags.config, env.COLAB_MCP_BRIDGE_CONFIG, defaultConfigPath()), cwd),
     baseUrl: normalizeBaseUrl(
       firstString(
@@ -151,6 +156,31 @@ export async function collectDoctorChecks(
 
 export function formatDoctorCheck(check) {
   return `${check.status.toUpperCase()} ${check.name}: ${check.message}`;
+}
+
+export function doctorJsonPayload(checks) {
+  const summary = checks.reduce(
+    (counts, check) => {
+      if (check.status === "pass") {
+        counts.pass += 1;
+      } else if (check.status === "warn") {
+        counts.warn += 1;
+      } else if (check.status === "fail") {
+        counts.fail += 1;
+      }
+      return counts;
+    },
+    { pass: 0, warn: 0, fail: 0 },
+  );
+  return {
+    ok: summary.fail === 0,
+    summary,
+    checks,
+  };
+}
+
+export function formatDoctorJson(checks) {
+  return JSON.stringify(doctorJsonPayload(checks), null, 2);
 }
 
 async function packageCheck(packageJsonPath, { exists, readTextFile }) {
@@ -321,7 +351,8 @@ Common flags:
   --config PATH             default: ${defaultConfigPath()}
   --base-url URL            override Worker URL for health check
   --skip-network            skip Worker /health and status checks
-  --require-network         make network check failures hard failures`;
+  --require-network         make network check failures hard failures
+  --json                    print machine-readable output`;
 }
 
 if (process.argv[1] === SCRIPT_PATH) {
@@ -332,8 +363,12 @@ if (process.argv[1] === SCRIPT_PATH) {
         return [];
       }
       const checks = await collectDoctorChecks(options);
-      for (const check of checks) {
-        console.log(formatDoctorCheck(check));
+      if (options.json) {
+        console.log(formatDoctorJson(checks));
+      } else {
+        for (const check of checks) {
+          console.log(formatDoctorCheck(check));
+        }
       }
       if (checks.some((check) => check.status === "fail")) {
         process.exitCode = 1;

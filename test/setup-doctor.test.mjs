@@ -19,6 +19,8 @@ import {
 import {
   collectDoctorChecks,
   formatDoctorCheck,
+  formatDoctorJson,
+  loadDoctorOptions,
   nodeVersionCheck,
 } from "../scripts/doctor.mjs";
 import {
@@ -309,6 +311,33 @@ test("doctor collection stays offline with injected command and fetch helpers", 
   const formatted = checks.map(formatDoctorCheck).join("\n");
   assert.match(formatted, /PASS local config:/);
   assert.doesNotMatch(formatted, /controller_secret/);
+});
+
+test("doctor JSON output is parseable and summarizes checks", () => {
+  const options = loadDoctorOptions({
+    argv: ["--json", "--config", "bridge.json", "--base-url", "https://bridge.test/", "--skip-network"],
+    env: {},
+    cwd: "/tmp/repo",
+  });
+  assert.equal(options.json, true);
+  assert.equal(options.configPath, "/tmp/repo/bridge.json");
+  assert.equal(options.baseUrl, "https://bridge.test");
+  assert.equal(options.skipNetwork, true);
+
+  const json = formatDoctorJson([
+    { status: "pass", name: "node", message: "Node is supported." },
+    { status: "warn", name: "local config", message: "No local MCP config found." },
+    { status: "fail", name: "worker health", message: "Worker health failed." },
+  ]);
+  const parsed = JSON.parse(json);
+
+  assert.equal(parsed.ok, false);
+  assert.deepEqual(parsed.summary, { pass: 1, warn: 1, fail: 1 });
+  assert.deepEqual(parsed.checks[0], {
+    status: "pass",
+    name: "node",
+    message: "Node is supported.",
+  });
 });
 
 test("MCP smoke planning keeps dangerous tool opt-in", () => {

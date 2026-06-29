@@ -87,6 +87,13 @@ export const localOperationalAnnotations: ToolAnnotations = {
   openWorldHint: true,
 };
 
+export const readOnlyLocalOperationalAnnotations: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+};
+
 export const toolDefinitions: ToolDefinition[] = [
   {
     name: "colab_status",
@@ -110,6 +117,112 @@ export const toolDefinitions: ToolDefinition[] = [
     inputSchema: emptyObjectSchema,
     outputSchema: structuredOutputSchema,
     annotations: readOnlyRemoteAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_doctor",
+    description:
+      "Run local Colab bridge prerequisite, config, and optional network diagnostics without requiring bridge config.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        config: { type: "string" },
+        base_url: { type: "string" },
+        skip_network: { type: "boolean", default: false },
+        require_network: { type: "boolean", default: false },
+        timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyLocalOperationalAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_list_sessions",
+    description: "List local google-colab-cli sessions without requiring bridge config.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        colab_config: { type: "string" },
+        timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyLocalOperationalAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_runtime_status",
+    description: "Return google-colab-cli status for the named Colab session without requiring bridge config.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_config: { type: "string" },
+        timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyLocalOperationalAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_runtime_url",
+    description: "Return google-colab-cli URL for the named Colab session without requiring bridge config.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_config: { type: "string" },
+        timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: readOnlyLocalOperationalAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_upload_file",
+    description: "Upload a local file to the named Colab session through google-colab-cli.",
+    inputSchema: {
+      type: "object",
+      required: ["local_path", "remote_path"],
+      properties: {
+        local_path: { type: "string" },
+        remote_path: { type: "string" },
+        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_config: { type: "string" },
+        timeout_sec: { type: "number", default: 300, minimum: 1, maximum: 1800 },
+        dry_run: { type: "boolean", default: false },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: localOperationalAnnotations,
+    enabledByDefault: true,
+  },
+  {
+    name: "colab_download_file",
+    description: "Download a file from the named Colab session through google-colab-cli.",
+    inputSchema: {
+      type: "object",
+      required: ["remote_path", "local_path"],
+      properties: {
+        remote_path: { type: "string" },
+        local_path: { type: "string" },
+        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_config: { type: "string" },
+        timeout_sec: { type: "number", default: 300, minimum: 1, maximum: 1800 },
+        dry_run: { type: "boolean", default: false },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: structuredOutputSchema,
+    annotations: localOperationalAnnotations,
     enabledByDefault: true,
   },
   {
