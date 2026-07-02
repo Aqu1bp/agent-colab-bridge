@@ -11,7 +11,7 @@ import {
 test("runner reconnect defaults to the named bridge session", () => {
   const options = loadReconnectRunnerOptions({ argv: [], env: {}, cwd: "/tmp/repo" });
 
-  assert.equal(options.colabSession, "codex-colab-bridge");
+  assert.equal(options.colabSession, "agent-colab-bridge");
   assert.equal(options.timeoutSec, 60);
   assert.equal(options.helperPath, "scripts/colab-reconnect-runner.py");
 });

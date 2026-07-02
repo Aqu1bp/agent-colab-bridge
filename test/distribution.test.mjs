@@ -11,11 +11,11 @@ const execFileAsync = promisify(execFile);
 test("root package exposes the generic MCP CLI command", async () => {
   const packageJson = JSON.parse(await readFile(resolve("package.json"), "utf8"));
 
-  assert.equal(packageJson.bin?.["codex-colab-bridge"], "bin/codex-colab-bridge.mjs");
+  assert.equal(packageJson.bin?.["agent-colab-bridge"], "bin/agent-colab-bridge.mjs");
   assert.ok(packageJson.files.includes("bin/"));
   assert.ok(packageJson.files.includes("dist/src/"));
 
-  const bin = await readFile(resolve("bin", "codex-colab-bridge.mjs"), "utf8");
+  const bin = await readFile(resolve("bin", "agent-colab-bridge.mjs"), "utf8");
   assert.match(bin, /command === "mcp"/);
   assert.doesNotMatch(bin, /spawn(Sync)?/);
 });
@@ -29,16 +29,16 @@ test("npm package payload includes the root MCP entry files", async () => {
   const [pack] = JSON.parse(stdout);
   const files = new Set(pack.files.map((file) => file.path));
 
-  assert.ok(files.has("bin/codex-colab-bridge.mjs"));
+  assert.ok(files.has("bin/agent-colab-bridge.mjs"));
   assert.ok(files.has("dist/src/mcp-server.js"));
   assert.ok(files.has("dist/src/mcp.js"));
   assert.ok(files.has("dist/src/mcp-config.js"));
   assert.ok(files.has("scripts/mcp-entry.mjs"));
-  assert.ok(files.has("plugins/codex-colab-bridge/dist/src/mcp-server.js"));
+  assert.ok(files.has("plugins/agent-colab-bridge/dist/src/mcp-server.js"));
 });
 
 test("generic MCP CLI stdout is JSON-RPC only", async () => {
-  const client = new StdioClient(process.execPath, [resolve("bin", "codex-colab-bridge.mjs"), "mcp"]);
+  const client = new StdioClient(process.execPath, [resolve("bin", "agent-colab-bridge.mjs"), "mcp"]);
   await client.start();
   try {
     await client.request("initialize", {
@@ -60,12 +60,12 @@ test("generic MCP CLI stdout is JSON-RPC only", async () => {
 test("docs include Claude Code, Cursor, and OpenCode MCP snippets", async () => {
   const docs = `${await readFile(resolve("README.md"), "utf8")}\n${await readFile(resolve("docs", "mcp-clients.md"), "utf8")}\n${await readFile(resolve("AGENTS.md"), "utf8")}`;
 
-  assert.match(docs, /claude mcp add --transport stdio colab-bridge -- npx -y codex-colab-bridge mcp/);
+  assert.match(docs, /claude mcp add --transport stdio colab-bridge -- npx -y agent-colab-bridge mcp/);
   assert.match(docs, /"type": "stdio"/);
   assert.match(docs, /"command": "npx"/);
-  assert.match(docs, /"args": \["-y", "codex-colab-bridge", "mcp"\]/);
+  assert.match(docs, /"args": \["-y", "agent-colab-bridge", "mcp"\]/);
   assert.match(docs, /"type": "local"/);
-  assert.match(docs, /"command": \["npx", "-y", "codex-colab-bridge", "mcp"\]/);
+  assert.match(docs, /"command": \["npx", "-y", "agent-colab-bridge", "mcp"\]/);
   assert.match(docs, /"enabled": true/);
   assert.match(docs, /colab_doctor/);
   assert.match(docs, /colab_get_config_summary/);

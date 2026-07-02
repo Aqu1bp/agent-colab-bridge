@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const outputRoot = resolve(repoRoot, "plugins", "codex-colab-bridge");
+const outputRoot = resolve(repoRoot, "plugins", "agent-colab-bridge");
 const requiredServer = resolve(repoRoot, "dist", "src", "mcp-server.js");
 
 if (!existsSync(requiredServer)) {

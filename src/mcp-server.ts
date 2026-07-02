@@ -231,7 +231,7 @@ export interface LocalCommandResultPayload {
   dry_run: boolean;
 }
 
-const DEFAULT_COLAB_SESSION_NAME = "codex-colab-bridge";
+const DEFAULT_COLAB_SESSION_NAME = "agent-colab-bridge";
 const DEFAULT_DOCTOR_TIMEOUT_SEC = 120;
 const MAX_DOCTOR_TIMEOUT_SEC = 300;
 const DEFAULT_COLAB_CLI_TIMEOUT_SEC = 120;
@@ -295,7 +295,7 @@ export class ColabMcpServer {
           tools: {},
         },
         serverInfo: {
-          name: "codex-colab-bridge",
+          name: "agent-colab-bridge",
           version: "0.1.0",
         },
       };

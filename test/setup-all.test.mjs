@@ -73,7 +73,7 @@ test("setup:all dry run ignores default local Worker URL unless config is explic
     argv: ["--dry-run", "--no-bootstrap"],
     env: {},
     cwd: "/tmp/repo",
-    exists: (path) => path.endsWith("/.config/codex-colab-bridge/config.json"),
+    exists: (path) => path.endsWith("/.config/agent-colab-bridge/config.json"),
     readTextFile: async () =>
       JSON.stringify({
         base_url: "https://private-worker.example.workers.dev",
@@ -136,11 +136,11 @@ test("setup:all Worker URL parser handles common Wrangler output", () => {
   assert.equal(
     parseWorkerUrlFromWranglerOutput(`
       Total Upload: 12 KiB / gzip: 4 KiB
-      Uploaded codex-colab-bridge
-      Published codex-colab-bridge
-        https://codex-colab-bridge.example.workers.dev
+      Uploaded agent-colab-bridge
+      Published agent-colab-bridge
+        https://agent-colab-bridge.example.workers.dev
     `),
-    "https://codex-colab-bridge.example.workers.dev",
+    "https://agent-colab-bridge.example.workers.dev",
   );
   assert.equal(
     parseWorkerUrlFromWranglerOutput("route: https://bridge.example.workers.dev/*"),
@@ -168,14 +168,14 @@ test("setup:all prerequisite package check accepts the published package name", 
     },
     {
       exists: (path) => path === "/tmp/repo/package.json",
-      readTextFile: async () => JSON.stringify({ name: "codex-colab-bridge" }),
+      readTextFile: async () => JSON.stringify({ name: "agent-colab-bridge" }),
       runCommand: async () => ({ ok: true, code: 0 }),
       nodeVersion: "v20.0.0",
     },
   );
 
   assert.equal(checks.some((check) => check.status === "fail"), false);
-  assert.ok(checks.some((check) => check.name === "package.json" && check.message.includes("codex-colab-bridge")));
+  assert.ok(checks.some((check) => check.name === "package.json" && check.message.includes("agent-colab-bridge")));
 });
 
 test("setup:all prerequisite collection does not invoke Colab checks when bootstrap is disabled", async () => {
@@ -187,7 +187,7 @@ test("setup:all prerequisite collection does not invoke Colab checks when bootst
     },
     {
       exists: (path) => path === "/tmp/repo/package.json",
-      readTextFile: async () => JSON.stringify({ name: "codex-colab-bridge" }),
+      readTextFile: async () => JSON.stringify({ name: "agent-colab-bridge" }),
       runCommand: async (command) => {
         commands.push(command.join(" "));
         return { ok: true, code: 0 };

@@ -1,14 +1,14 @@
 {
-  "name": "codex-colab-bridge",
+  "name": "agent-colab-bridge",
   "interface": {
-    "displayName": "Codex Colab Bridge"
+    "displayName": "Agent Colab Bridge"
   },
   "plugins": [
     {
-      "name": "codex-colab-bridge",
+      "name": "agent-colab-bridge",
       "source": {
         "source": "local",
-        "path": "./plugins/codex-colab-bridge"
+        "path": "./plugins/agent-colab-bridge"
       },
       "policy": {
         "installation": "AVAILABLE",

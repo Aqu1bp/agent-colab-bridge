@@ -1,5 +1,5 @@
 {
-  "name": "codex-colab-bridge",
+  "name": "agent-colab-bridge",
   "version": "0.1.0",
   "description": "Use Google Colab runtimes from MCP clients through a Cloudflare-backed bridge.",
   "private": false,
@@ -7,12 +7,12 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Aqu1bp/colab-mcp-bridge.git"
+    "url": "git+https://github.com/Aqu1bp/agent-colab-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/Aqu1bp/colab-mcp-bridge/issues"
+    "url": "https://github.com/Aqu1bp/agent-colab-bridge/issues"
   },
-  "homepage": "https://github.com/Aqu1bp/colab-mcp-bridge#readme",
+  "homepage": "https://github.com/Aqu1bp/agent-colab-bridge#readme",
   "keywords": [
     "codex",
     "colab",
@@ -37,7 +37,7 @@
     "test": "npm run build && node --test dist/test/*.test.js test/*.test.mjs"
   },
   "bin": {
-    "codex-colab-bridge": "bin/codex-colab-bridge.mjs"
+    "agent-colab-bridge": "bin/agent-colab-bridge.mjs"
   },
   "files": [
     ".agents/plugins/marketplace.json",
@@ -49,12 +49,12 @@
     "README.md",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
-    "codex-colab-bridge-spec.md",
+    "agent-colab-bridge-spec.md",
     "config.example.json",
     "bin/",
     "dist/src/",
     "docs/",
-    "plugins/codex-colab-bridge/",
+    "plugins/agent-colab-bridge/",
     "python/colab_runner.py",
     "scripts/",
     "skills/",

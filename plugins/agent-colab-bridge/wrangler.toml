@@ -1,5 +1,5 @@
 name = "agent-colab-bridge"
-main = "src/worker.ts"
+main = "dist/src/worker.js"
 compatibility_date = "2026-06-28"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true

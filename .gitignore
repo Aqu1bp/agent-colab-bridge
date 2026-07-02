@@ -3,8 +3,8 @@ node_modules/
 
 # Build output
 dist/
-!plugins/codex-colab-bridge/dist/
-!plugins/codex-colab-bridge/dist/**
+!plugins/agent-colab-bridge/dist/
+!plugins/agent-colab-bridge/dist/**
 
 # Python caches
 __pycache__/

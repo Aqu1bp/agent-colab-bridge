@@ -10,7 +10,7 @@ import {
 test("runtime stop defaults to the named bridge session", () => {
   const options = loadStopRuntimeOptions({ argv: ["--dry-run"], env: {} });
 
-  assert.equal(options.colabSession, "codex-colab-bridge");
+  assert.equal(options.colabSession, "agent-colab-bridge");
   assert.deepEqual(createStopRuntimeCommand(options), [
     "uvx",
     "--from",
@@ -18,7 +18,7 @@ test("runtime stop defaults to the named bridge session", () => {
     "colab",
     "stop",
     "-s",
-    "codex-colab-bridge",
+    "agent-colab-bridge",
   ]);
 });
 

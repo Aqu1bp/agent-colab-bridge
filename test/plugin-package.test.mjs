@@ -4,7 +4,7 @@ import { existsSync, lstatSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const pluginRoot = resolve("plugins", "codex-colab-bridge");
+const pluginRoot = resolve("plugins", "agent-colab-bridge");
 
 test("Codex marketplace plugin payload is a real packaged directory", async () => {
   assert.equal(existsSync(pluginRoot), true);

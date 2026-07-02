@@ -165,7 +165,7 @@ test("initialize returns MCP server capabilities", async () => {
   };
   assert.equal(result.protocolVersion, "2025-11-25");
   assert.deepEqual(result.capabilities.tools, {});
-  assert.equal(result.serverInfo.name, "codex-colab-bridge");
+  assert.equal(result.serverInfo.name, "agent-colab-bridge");
 });
 
 test("tools/list includes disabled dangerous tools with schemas and annotations", async () => {
@@ -369,7 +369,7 @@ test("tools/list includes disabled dangerous tools with schemas and annotations"
   assert.equal(
     (runtimeStatus.inputSchema as { properties: Record<string, { default?: unknown }> }).properties.colab_session
       ?.default,
-    "codex-colab-bridge",
+    "agent-colab-bridge",
   );
   assert.deepEqual(runtimeStatus.annotations, {
     readOnlyHint: true,
@@ -887,7 +887,7 @@ test("Colab CLI state tools run locally without bridge config", async () => {
       runtimeUrl: async (payload) => {
         payloads.runtimeUrl.push(payload);
         return {
-          command: ["uvx", "--from", "google-colab-cli", "colab", "url", "-s", "codex-colab-bridge"],
+          command: ["uvx", "--from", "google-colab-cli", "colab", "url", "-s", "agent-colab-bridge"],
           stdout: "https://colab.research.google.com/drive/test\n",
           stderr: "",
           exit_code: 0,
@@ -925,7 +925,7 @@ test("Colab CLI state tools run locally without bridge config", async () => {
   assert.deepEqual(payloads, {
     listSessions: [{ colabConfig: "/tmp/colab.json", timeoutSec: 20 }],
     runtimeStatus: [{ colabSession: "named", colabConfig: undefined, timeoutSec: 21 }],
-    runtimeUrl: [{ colabSession: "codex-colab-bridge", colabConfig: undefined, timeoutSec: 120 }],
+    runtimeUrl: [{ colabSession: "agent-colab-bridge", colabConfig: undefined, timeoutSec: 120 }],
   });
 });
 
@@ -952,7 +952,7 @@ test("Colab CLI transfer tools run locally without bridge config", async () => {
       downloadFile: async (payload) => {
         payloads.downloadFile.push(payload);
         return {
-          command: ["uvx", "--from", "google-colab-cli", "colab", "download", "-s", "codex-colab-bridge", "/content/out.txt", "out.txt"],
+          command: ["uvx", "--from", "google-colab-cli", "colab", "download", "-s", "agent-colab-bridge", "/content/out.txt", "out.txt"],
           stdout: "downloaded\n",
           stderr: "",
           exit_code: 0,
@@ -1005,7 +1005,7 @@ test("Colab CLI transfer tools run locally without bridge config", async () => {
       {
         localPath: "out.txt",
         remotePath: "/content/out.txt",
-        colabSession: "codex-colab-bridge",
+        colabSession: "agent-colab-bridge",
         colabConfig: undefined,
         timeoutSec: 301,
         dryRun: false,

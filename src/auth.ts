@@ -1,8 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { bridgeError, type BridgeError } from "./protocol.js";
 
-const TOKEN_HASH_NAMESPACE = "codex-colab-bridge";
-const LEGACY_TOKEN_HASH_NAMESPACE = "colab-mcp-bridge";
+const TOKEN_HASH_NAMESPACE = "agent-colab-bridge";
+const LEGACY_TOKEN_HASH_NAMESPACES = ["codex-colab-bridge", "colab-mcp-bridge"];
 
 export interface AuthAttempt {
   token: string;
@@ -53,7 +53,9 @@ export function hashToken(token: string): string {
 export function verifyToken(token: string, expectedHash: string): boolean {
   return (
     verifyTokenHash(hashToken(token), expectedHash) ||
-    verifyTokenHash(hashTokenWithNamespace(LEGACY_TOKEN_HASH_NAMESPACE, token), expectedHash)
+    LEGACY_TOKEN_HASH_NAMESPACES.some((namespace) =>
+      verifyTokenHash(hashTokenWithNamespace(namespace, token), expectedHash),
+    )
   );
 }
 

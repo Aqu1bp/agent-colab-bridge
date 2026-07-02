@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve `codex-colab-bridge`.
+Thanks for helping improve `agent-colab-bridge`.
 
 ## Development
 

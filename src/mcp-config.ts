@@ -2,8 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "codex-colab-bridge", "config.json");
-const LEGACY_CONFIG_PATH = join(homedir(), ".config", "colab-mcp-bridge", "config.json");
+const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "agent-colab-bridge", "config.json");
+const LEGACY_CONFIG_PATHS = [
+  join(homedir(), ".config", "codex-colab-bridge", "config.json"),
+  join(homedir(), ".config", "colab-mcp-bridge", "config.json"),
+];
 
 export interface LocalBridgeConfig {
   baseUrl: string;
@@ -89,11 +92,7 @@ export function loadLocalBridgeConfig(
   }
 
   const explicitConfigPath = options.configPath ?? env.COLAB_MCP_BRIDGE_CONFIG;
-  const configPath =
-    explicitConfigPath ??
-    (existsSync(DEFAULT_CONFIG_PATH) || !existsSync(LEGACY_CONFIG_PATH)
-      ? DEFAULT_CONFIG_PATH
-      : LEGACY_CONFIG_PATH);
+  const configPath = explicitConfigPath ?? defaultOrLegacyConfigPath();
 
   if (!existsSync(configPath)) {
     throw new BridgeConfigError(
@@ -158,11 +157,9 @@ export function getLocalBridgeConfigSummary(
 
   const explicitConfigPath = options.configPath ?? env.COLAB_MCP_BRIDGE_CONFIG;
   const defaultExists = existsSync(DEFAULT_CONFIG_PATH);
-  const legacyExists = existsSync(LEGACY_CONFIG_PATH);
-  const configPath =
-    explicitConfigPath ??
-    (defaultExists || !legacyExists ? DEFAULT_CONFIG_PATH : LEGACY_CONFIG_PATH);
-  const legacyConfigUsed = !explicitConfigPath && configPath === LEGACY_CONFIG_PATH;
+  const firstLegacyPath = LEGACY_CONFIG_PATHS.find((path) => existsSync(path));
+  const configPath = explicitConfigPath ?? (defaultExists || !firstLegacyPath ? DEFAULT_CONFIG_PATH : firstLegacyPath);
+  const legacyConfigUsed = !explicitConfigPath && LEGACY_CONFIG_PATHS.includes(configPath);
   const configSource = explicitConfigPath
     ? "explicit_file"
     : legacyConfigUsed
@@ -239,6 +236,13 @@ export function getLocalBridgeConfigSummary(
       error,
     });
   }
+}
+
+function defaultOrLegacyConfigPath(): string {
+  if (existsSync(DEFAULT_CONFIG_PATH)) {
+    return DEFAULT_CONFIG_PATH;
+  }
+  return LEGACY_CONFIG_PATHS.find((path) => existsSync(path)) ?? DEFAULT_CONFIG_PATH;
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {

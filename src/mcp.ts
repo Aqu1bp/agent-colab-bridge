@@ -191,7 +191,7 @@ export const toolDefinitions: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_session: { type: "string", default: "agent-colab-bridge" },
         colab_config: { type: "string" },
         timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
       },
@@ -207,7 +207,7 @@ export const toolDefinitions: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_session: { type: "string", default: "agent-colab-bridge" },
         colab_config: { type: "string" },
         timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
       },
@@ -226,7 +226,7 @@ export const toolDefinitions: ToolDefinition[] = [
       properties: {
         local_path: { type: "string" },
         remote_path: { type: "string" },
-        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_session: { type: "string", default: "agent-colab-bridge" },
         colab_config: { type: "string" },
         timeout_sec: { type: "number", default: 300, minimum: 1, maximum: 1800 },
         dry_run: { type: "boolean", default: false },
@@ -246,7 +246,7 @@ export const toolDefinitions: ToolDefinition[] = [
       properties: {
         remote_path: { type: "string" },
         local_path: { type: "string" },
-        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_session: { type: "string", default: "agent-colab-bridge" },
         colab_config: { type: "string" },
         timeout_sec: { type: "number", default: 300, minimum: 1, maximum: 1800 },
         dry_run: { type: "boolean", default: false },
@@ -264,7 +264,7 @@ export const toolDefinitions: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_session: { type: "string", default: "agent-colab-bridge" },
         colab_config: { type: "string" },
         project_root: { type: "string" },
         timeout_sec: { type: "number", default: 60, minimum: 1, maximum: 300 },
@@ -291,7 +291,7 @@ export const toolDefinitions: ToolDefinition[] = [
         bootstrap: { type: "boolean", default: true },
         smoke: { type: "boolean", default: true },
         gpu: { type: "string", default: "T4" },
-        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_session: { type: "string", default: "agent-colab-bridge" },
         project_root: { type: "string", default: "/content/project" },
         colab_config: { type: "string" },
         config: { type: "string" },
@@ -328,7 +328,7 @@ export const toolDefinitions: ToolDefinition[] = [
       properties: {
         dry_run: { type: "boolean", default: false },
         confirm_runtime_stop: { type: "boolean", default: false },
-        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_session: { type: "string", default: "agent-colab-bridge" },
         colab_config: { type: "string" },
         timeout_sec: { type: "number", default: 120, minimum: 1, maximum: 300 },
       },
@@ -352,7 +352,7 @@ export const toolDefinitions: ToolDefinition[] = [
         skip_stop: { type: "boolean", default: false },
         smoke: { type: "boolean", default: true },
         enable_dangerous_tools: { type: "boolean" },
-        colab_session: { type: "string", default: "codex-colab-bridge" },
+        colab_session: { type: "string", default: "agent-colab-bridge" },
         project_root: { type: "string", default: "/content/project" },
         colab_config: { type: "string" },
         config: { type: "string" },

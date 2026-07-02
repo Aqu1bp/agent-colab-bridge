@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "codex-colab-bridge": {
-      "command": "node",
-      "args": ["scripts/mcp-entry.mjs"],
-      "cwd": "."
-    }
-  }
-}

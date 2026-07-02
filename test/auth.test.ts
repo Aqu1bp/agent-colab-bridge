@@ -43,7 +43,9 @@ test("stale auth timestamp is rejected", () => {
 });
 
 test("legacy token hashes remain accepted for existing sessions", () => {
-  const legacyHash = "da4608d728ed65be9258ececf328786342c4ca1128f4c016f8cf104b8a94997b";
+  const codexHash = "34acb5b1c9a7fd9ac1bb3f26a3a073959e9cb1e256830d4126f042e037e02c2f";
+  const originalHash = "da4608d728ed65be9258ececf328786342c4ca1128f4c016f8cf104b8a94997b";
 
-  assert.equal(verifyToken("br_legacy", legacyHash), true);
+  assert.equal(verifyToken("br_legacy", codexHash), true);
+  assert.equal(verifyToken("br_legacy", originalHash), true);
 });

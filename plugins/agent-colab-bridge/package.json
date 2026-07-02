@@ -1,0 +1,21 @@
+{
+  "name": "agent-colab-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "bootstrap:colab": "node scripts/bootstrap-colab.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "runner:reconnect": "node scripts/reconnect-runner.mjs",
+    "runtime:options": "node scripts/runtime-options.mjs",
+    "runtime:recreate": "node scripts/recreate-runtime.mjs",
+    "runtime:stop": "node scripts/stop-runtime.mjs",
+    "setup:all": "node scripts/setup-all.mjs",
+    "setup:bridge": "node scripts/setup-bridge.mjs",
+    "smoke:mcp": "node scripts/smoke-mcp.mjs"
+  }
+}

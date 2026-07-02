@@ -115,7 +115,7 @@ test("bootstrap treats google-colab-cli not-found status output as missing sessi
     isUsableColabStatusResult({
       ok: true,
       code: 0,
-      stdout: "[colab] Session 'codex-colab-bridge' not found.\n",
+      stdout: "[colab] Session 'agent-colab-bridge' not found.\n",
       stderr: "",
     }),
     false,
@@ -124,7 +124,7 @@ test("bootstrap treats google-colab-cli not-found status output as missing sessi
     isUsableColabStatusResult({
       ok: true,
       code: 0,
-      stdout: "[codex-colab-bridge] gpu-t4 | Hardware: T4 | Variant: GPU\n",
+      stdout: "[agent-colab-bridge] gpu-t4 | Hardware: T4 | Variant: GPU\n",
       stderr: "",
     }),
     true,
