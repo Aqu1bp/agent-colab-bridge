@@ -22,10 +22,12 @@ if (!existsSync(serverPath) && !existsSync(tscPath)) {
   const installArgs = existsSync(lockPath) ? ["ci", "--ignore-scripts"] : ["install", "--ignore-scripts"];
   const result = spawnSync("npm", installArgs, {
     cwd: repoRoot,
-    stdio: "inherit",
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
   });
   if (result.status !== 0) {
+    forwardStartupOutput(result.stdout, result.stderr);
     process.stderr.write(
       `codex-colab-bridge MCP server dependencies are not installed, and \`npm ${installArgs.join(" ")}\` failed. Run \`npm install\` in the source checkout.\n`,
     );
@@ -36,10 +38,12 @@ if (!existsSync(serverPath) && !existsSync(tscPath)) {
 if (!existsSync(serverPath)) {
   const result = spawnSync("npm", ["run", "build"], {
     cwd: repoRoot,
-    stdio: "inherit",
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
   });
   if (result.status !== 0) {
+    forwardStartupOutput(result.stdout, result.stderr);
     process.stderr.write(
       "codex-colab-bridge MCP server is not built, and `npm run build` failed. Run `npm install && npm run build` in the plugin checkout.\n",
     );
@@ -49,3 +53,12 @@ if (!existsSync(serverPath)) {
 
 const { runStdioMcpServer } = await import(pathToFileURL(serverPath).href);
 await runStdioMcpServer();
+
+function forwardStartupOutput(stdout, stderr) {
+  if (stdout) {
+    process.stderr.write(stdout);
+  }
+  if (stderr) {
+    process.stderr.write(stderr);
+  }
+}

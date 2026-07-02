@@ -23,7 +23,7 @@ Prerequisites:
   project-pinned Wrangler CLI used by setup.
 - `uvx` for running `google-colab-cli` on macOS or Linux
 - A Colab account/session that you control
-- The Codex CLI/app for plugin installation
+- The Codex CLI/app only when installing the Codex plugin
 
 After cloning the repo, install and test it:
 
@@ -159,6 +159,62 @@ cp .env.example .env
 cp config.example.json config.local.json
 ```
 
+## Generic Local Stdio MCP
+
+The npm package can be used directly by MCP clients that support local stdio
+servers:
+
+```bash
+npx -y codex-colab-bridge mcp
+```
+
+stdout is reserved for MCP JSON-RPC messages. Startup diagnostics and errors go
+to stderr. See [docs/mcp-clients.md](docs/mcp-clients.md) for Claude Code,
+Cursor, and OpenCode configuration snippets.
+
+Claude Code:
+
+```bash
+claude mcp add --transport stdio colab-bridge -- npx -y codex-colab-bridge mcp
+```
+
+For project `.mcp.json` files, review and approve only configurations you trust.
+This bridge can enable remote code execution inside your Colab runtime after
+setup.
+
+Cursor `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "colab-bridge": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "codex-colab-bridge", "mcp"]
+    }
+  }
+}
+```
+
+OpenCode `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "colab-bridge": {
+      "type": "local",
+      "command": ["npx", "-y", "codex-colab-bridge", "mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Portable agent guidance is in [AGENTS.md](AGENTS.md). Agents should prefer
+`colab_doctor`, `colab_get_config_summary`, `colab_setup_bridge`, and
+`colab_reconnect_runner` before running workload tools. Dangerous remote-code
+tools are disabled until explicitly enabled.
+
 ## Codex App Plugin
 
 This repository is also a Codex plugin marketplace. For a local checkout, run:
@@ -217,7 +273,7 @@ npm run doctor -- \
   --require-network
 ```
 
-Smoke test the Codex-facing MCP path:
+Smoke test the stdio MCP path:
 
 ```bash
 npm run smoke:mcp

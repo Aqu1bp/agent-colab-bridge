@@ -17,10 +17,12 @@ await removeOutput(outputRoot);
 await mkdir(outputRoot, { recursive: true });
 
 await copyDirectory(".codex-plugin", ".codex-plugin");
+await copyDirectory("docs", "docs");
 await copyDirectory("skills", "skills");
 await copyDirectory("dist/src", "dist/src");
 await copyDirectory("python", "python");
 await copyFile(".mcp.json", ".mcp.json");
+await copyFile("AGENTS.md", "AGENTS.md");
 await copyFile("LICENSE", "LICENSE");
 await copyFile("README.md", "README.md");
 await copyFile("SECURITY.md", "SECURITY.md");

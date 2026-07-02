@@ -11,6 +11,8 @@ test("Codex marketplace plugin payload is a real packaged directory", async () =
   assert.equal(lstatSync(pluginRoot).isSymbolicLink(), false);
   assert.equal(existsSync(resolve(pluginRoot, ".codex-plugin", "plugin.json")), true);
   assert.equal(existsSync(resolve(pluginRoot, ".mcp.json")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "AGENTS.md")), true);
+  assert.equal(existsSync(resolve(pluginRoot, "docs", "mcp-clients.md")), true);
   assert.equal(existsSync(resolve(pluginRoot, "dist", "src", "mcp-server.js")), true);
   assert.equal(existsSync(resolve(pluginRoot, "scripts", "mcp-entry.mjs")), true);
   assert.equal(existsSync(resolve(pluginRoot, "scripts", "local-bridge-common.mjs")), true);
@@ -46,5 +48,15 @@ test("Codex plugin packager includes doctor script for local MCP diagnostics", a
   const packager = await readFile(resolve("scripts", "package-codex-plugin.mjs"), "utf8");
 
   assert.match(packager, /copyFile\("scripts\/doctor\.mjs", "scripts\/doctor\.mjs"\)/);
+  assert.match(packager, /copyFile\("AGENTS\.md", "AGENTS\.md"\)/);
+  assert.match(packager, /copyDirectory\("docs", "docs"\)/);
   assert.match(packager, /doctor: "node scripts\/doctor\.mjs"/);
+});
+
+test("Codex plugin MCP entrypoint keeps install and build recovery off stdout", async () => {
+  const entrypoint = await readFile(resolve(pluginRoot, "scripts", "mcp-entry.mjs"), "utf8");
+
+  assert.doesNotMatch(entrypoint, /stdio: "inherit"/);
+  assert.match(entrypoint, /stdio: \["ignore", "pipe", "pipe"\]/);
+  assert.match(entrypoint, /process\.stderr\.write\(stdout\)/);
 });

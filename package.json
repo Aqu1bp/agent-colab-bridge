@@ -1,7 +1,7 @@
 {
   "name": "codex-colab-bridge",
   "version": "0.1.0",
-  "description": "Use Google Colab runtimes from Codex through a Cloudflare-backed MCP bridge.",
+  "description": "Use Google Colab runtimes from MCP clients through a Cloudflare-backed bridge.",
   "private": false,
   "license": "MIT",
   "type": "module",
@@ -36,17 +36,24 @@
     "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs",
     "test": "npm run build && node --test dist/test/*.test.js test/*.test.mjs"
   },
+  "bin": {
+    "codex-colab-bridge": "bin/codex-colab-bridge.mjs"
+  },
   "files": [
     ".agents/plugins/marketplace.json",
     ".codex-plugin/",
     ".env.example",
     ".mcp.json",
+    "AGENTS.md",
     "LICENSE",
     "README.md",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
     "codex-colab-bridge-spec.md",
     "config.example.json",
+    "bin/",
+    "dist/src/",
+    "docs/",
     "plugins/codex-colab-bridge/",
     "python/colab_runner.py",
     "scripts/",
