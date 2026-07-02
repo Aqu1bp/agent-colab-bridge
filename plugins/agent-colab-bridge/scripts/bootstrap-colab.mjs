@@ -11,7 +11,6 @@ const DEFAULT_PROJECT_ROOT = "/content/project";
 const DEFAULT_RUNNER_PATH = "python/colab_runner.py";
 const DEFAULT_REMOTE_RUNNER_NAME = "colab_runner.py";
 const DEFAULT_REMOTE_CONFIG_NAME = ".colab_mcp_runner_env.json";
-const DEFAULT_GPU = "T4";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
@@ -158,7 +157,7 @@ export async function loadBootstrapOptions({
     localRunnerPath,
     remoteRunnerPath,
     remoteConfigPath,
-    gpu: firstString(flags.gpu, env.COLAB_MCP_BRIDGE_GPU, config.gpu, DEFAULT_GPU),
+    gpu: firstString(flags.gpu, env.COLAB_MCP_BRIDGE_GPU, config.gpu),
     colabConfig: firstString(
       flags.colabConfig,
       env.COLAB_MCP_BRIDGE_COLAB_CONFIG,
@@ -388,7 +387,17 @@ async function run(options) {
     console.log(`Reusing existing Colab session ${options.colabSessionName}.`);
   } else {
     const createStep = createCommandPlan(options)[1];
-    await runRequiredStep(createStep);
+    const createResult = await runStep(createStep);
+    if (!createResult.ok) {
+      const retryStatus = await runCommand(statusStep.command, { quiet: true });
+      if (isUsableColabStatusResult(retryStatus)) {
+        console.log(
+          "Colab session became available after the create command failed; continuing bootstrap with the existing runtime.",
+        );
+      } else {
+        throw new Error(`Command failed with exit code ${createResult.code}: ${formatCommand(createStep.command)}`);
+      }
+    }
   }
 
   const tempDir = await mkdtemp(resolve(tmpdir(), "colab-mcp-bootstrap-"));
@@ -430,12 +439,17 @@ async function run(options) {
 }
 
 async function runRequiredStep(step) {
-  console.log(`\n${step.label}`);
-  console.log(formatCommand(step.command));
-  const result = await runCommand(step.command);
+  const result = await runStep(step);
   if (!result.ok) {
     throw new Error(`Command failed with exit code ${result.code}: ${formatCommand(step.command)}`);
   }
+}
+
+async function runStep(step) {
+  console.log(`\n${step.label}`);
+  console.log(formatCommand(step.command));
+  const result = await runCommand(step.command);
+  return result;
 }
 
 function runCommand(command, { quiet = false } = {}) {
@@ -556,7 +570,7 @@ Common flags:
   --runner-token TOKEN
   --controller-token TOKEN
   --colab-session NAME       default: ${DEFAULT_COLAB_SESSION_NAME}
-  --gpu T4                   default: ${DEFAULT_GPU}; use "none" to skip
+  --gpu T4                   optional; omitted by default to avoid changing an existing runtime
   --project-root PATH        default: ${DEFAULT_PROJECT_ROOT}
   --runner-path PATH         default: ${DEFAULT_RUNNER_PATH}
   --remote-runner-path PATH  default: <project-root>/${DEFAULT_REMOTE_RUNNER_NAME}

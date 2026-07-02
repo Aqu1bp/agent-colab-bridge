@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   createReconnectRunnerCommand,
   dryRunLines,
@@ -90,3 +94,54 @@ test("runner reconnect parser rejects invalid timeout", () => {
     /--timeout must be a positive number/,
   );
 });
+
+test("runner reconnect fails when Colab reports a traceback despite zero CLI exit", async () => {
+  const tempDir = await mkdtemp(resolve(tmpdir(), "colab-reconnect-test-"));
+  try {
+    const uvx = resolve(tempDir, "uvx");
+    await writeFile(
+      uvx,
+      [
+        "#!/bin/sh",
+        "printf '%s\\n' 'Traceback (most recent call last)' >&2",
+        "printf '%s\\n' 'RuntimeError: Runner pid file is missing: /content/project/.colab_mcp_runner.pid' >&2",
+        "exit 0",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+
+    const result = await runNodeScript(["scripts/reconnect-runner.mjs", "--timeout", "1"], {
+      PATH: `${tempDir}:${process.env.PATH ?? ""}`,
+    });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Runner pid file is missing/);
+    assert.match(result.stderr, /did not report RUNNER_STATUS=reconnect_requested/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+function runNodeScript(args, env = {}) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(process.execPath, args, {
+      cwd: process.cwd(),
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => {
+      resolvePromise({ code: code ?? 1, stdout, stderr });
+    });
+  });
+}

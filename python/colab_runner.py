@@ -1102,6 +1102,8 @@ async def connect_and_run(
     session_id: str,
     runner_token: str,
     instance_id: str | None = None,
+    reconnect_delay_sec: float = 5,
+    max_reconnect_attempts: int | None = None,
 ) -> None:
     """Outbound WebSocket loop shape.
 
@@ -1110,17 +1112,56 @@ async def connect_and_run(
     package lazily so unit tests can import this module without that dependency.
     """
 
+    runner_id = instance_id or runner_instance_id()
+    kernel_started_at = now_iso()
+    runner_started_at = now_iso()
+    reconnect_attempts = 0
+
+    while True:
+        reconnect_attempts += 1
+        try:
+            await connect_once(
+                bridge_url=bridge_url,
+                session_id=session_id,
+                runner_token=runner_token,
+                runner_id=runner_id,
+                kernel_started_at=kernel_started_at,
+                runner_started_at=runner_started_at,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            print(
+                f"Runner WebSocket disconnected: {type(error).__name__}: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        if max_reconnect_attempts is not None and reconnect_attempts >= max_reconnect_attempts:
+            return
+
+        await asyncio.sleep(reconnect_delay_sec)
+
+
+async def connect_once(
+    *,
+    bridge_url: str,
+    session_id: str,
+    runner_token: str,
+    runner_id: str,
+    kernel_started_at: str,
+    runner_started_at: str,
+) -> None:
     import websockets  # type: ignore
 
-    runner_id = instance_id or runner_instance_id()
     url = runner_websocket_url(bridge_url, session_id)
     headers = {
         "Authorization": f"Bearer {runner_token}",
         "X-Bridge-Timestamp": now_iso(),
         "X-Bridge-Nonce": f"runner_{uuid.uuid4().hex}",
         "X-Bridge-Runner-Instance-Id": runner_id,
-        "X-Bridge-Kernel-Started-At": now_iso(),
-        "X-Bridge-Runner-Started-At": now_iso(),
+        "X-Bridge-Kernel-Started-At": kernel_started_at,
+        "X-Bridge-Runner-Started-At": runner_started_at,
     }
 
     try:

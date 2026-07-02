@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   createCommandPlan,
   dryRunLines,
@@ -42,6 +46,18 @@ test("bootstrap command plan uses google-colab-cli through uvx", async () => {
   assert.deepEqual(plan[1].command.slice(-4), ["-s", "named-session", "--gpu", "T4"]);
   assert.ok(plan.some((step) => step.command.includes("upload")));
   assert.ok(plan.some((step) => step.command.includes("install")));
+});
+
+test("bootstrap does not request a GPU unless explicitly configured", async () => {
+  const options = await loadBootstrapOptions({
+    argv: ["--dry-run", "--colab-session", "named-session"],
+    env: requiredEnv,
+    readTextFile: neverRead,
+  });
+
+  const plan = createCommandPlan(options);
+  assert.deepEqual(plan[1].command.slice(-3), ["new", "-s", "named-session"]);
+  assert.equal(plan[1].command.includes("--gpu"), false);
 });
 
 test("dry run output does not expose token values", async () => {
@@ -131,6 +147,79 @@ test("bootstrap treats google-colab-cli not-found status output as missing sessi
   );
 });
 
+test("bootstrap continues when Colab new reports an error but creates the session", async () => {
+  const tempDir = await mkdtemp(resolve(tmpdir(), "colab-bootstrap-test-"));
+  try {
+    const createdFlag = resolve(tempDir, "created");
+    const uvx = resolve(tempDir, "uvx");
+    await writeFile(
+      uvx,
+      [
+        "#!/bin/sh",
+        `created=${JSON.stringify(createdFlag)}`,
+        "case \"$*\" in",
+        "  *' colab status '*)",
+        "    if [ -f \"$created\" ]; then",
+        "      printf '%s\\n' '[agent-colab-bridge] gpu-l4 | Hardware: L4 | Variant: GPU | Status: IDLE'",
+        "    else",
+        "      printf '%s\\n' \"[colab] Session 'agent-colab-bridge' not found.\"",
+        "    fi",
+        "    exit 0",
+        "    ;;",
+        "  *' colab new '*)",
+        "    touch \"$created\"",
+        "    printf '%s\\n' 'INTERNAL_ERROR: runtime creation failed after allocation' >&2",
+        "    exit 1",
+        "    ;;",
+        "  *' colab url '*)",
+        "    printf '%s\\n' 'https://colab.research.google.com/notebooks/empty.ipynb'",
+        "    exit 0",
+        "    ;;",
+        "  *)",
+        "    exit 0",
+        "    ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+
+    const result = await runNodeScript(["scripts/bootstrap-colab.mjs", "--gpu", "L4"], {
+      ...requiredEnv,
+      PATH: `${tempDir}:${process.env.PATH ?? ""}`,
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Colab session became available after the create command failed/);
+    assert.match(result.stdout, /Start the runner in the Colab runtime/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 async function neverRead() {
   throw new Error("config file should not be read");
+}
+
+function runNodeScript(args, env = {}) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(process.execPath, args, {
+      cwd: process.cwd(),
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => {
+      resolvePromise({ code: code ?? 1, stdout, stderr });
+    });
+  });
 }

@@ -134,10 +134,9 @@ async function run(options) {
     console.log("Runner token values will not be printed.");
     console.log(formatCommand(createReconnectRunnerCommand(options, prepared.path)));
     const result = await runCommand(createReconnectRunnerCommand(options, prepared.path), { cwd: options.cwd });
-    if (!result.ok) {
-      throw new Error(
-        `Runner reconnect failed with exit code ${result.code}. If the old runner process or VM is gone, run setup/bootstrap or runtime:recreate instead.`,
-      );
+    const failureMessage = reconnectFailureMessage(result);
+    if (failureMessage) {
+      throw new Error(failureMessage);
     }
     console.log("Runner reconnect command completed. Run colab_status or npm run smoke:mcp to verify runner_connected=true.");
   } finally {
@@ -169,18 +168,56 @@ async function prepareHelper(options) {
   };
 }
 
+export function reconnectFailureMessage(result) {
+  const recoveryHint = "If the old runner process, pid file, or VM bootstrap state is gone, run setup/bootstrap or runtime:recreate instead.";
+  if (!result.ok) {
+    return `Runner reconnect failed with exit code ${result.code}. ${recoveryHint}`;
+  }
+  const text = `${result.stdout}\n${result.stderr}`;
+  const colabException = /\bTraceback \(most recent call last\)|\b[A-Za-z_][A-Za-z0-9_]*Error:/m.test(text);
+  if (!colabException && /\bRUNNER_STATUS=reconnect_requested\b/.test(text)) {
+    return undefined;
+  }
+
+  const reason = colabException
+    ? "Colab reported a Python exception"
+    : "the reconnect helper did not print its success marker";
+  return `Runner reconnect command exited successfully, but ${reason} and did not report RUNNER_STATUS=reconnect_requested. ${recoveryHint}`;
+}
+
 function runCommand(command, { cwd = process.cwd() } = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(command[0], command.slice(1), {
       cwd,
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      process.stdout.write(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      process.stderr.write(chunk);
     });
     child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       console.error(error.message);
-      resolvePromise({ ok: false, code: 127 });
+      resolvePromise({ ok: false, code: 127, stdout, stderr });
     });
     child.on("close", (code) => {
-      resolvePromise({ ok: code === 0, code: code ?? 1 });
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolvePromise({ ok: code === 0, code: code ?? 1, stdout, stderr });
     });
   });
 }
