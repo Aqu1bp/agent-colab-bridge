@@ -42,6 +42,23 @@ interface CommandData {
   state_history: string[];
 }
 
+interface StatusData {
+  runner_instance_id: string | null;
+  active_job_id: string | null;
+}
+
+interface RunnerCommandMessage {
+  session_id: string;
+  command_id: string;
+  message_id: string;
+  type: string;
+}
+
+function requireRunnerCommandMessage(value: RunnerCommandMessage | null): RunnerCommandMessage {
+  assert.ok(value);
+  return value;
+}
+
 async function fetchWorker(env: BridgeWorkerEnv, request: Request): Promise<Response> {
   return worker.fetch(request, env);
 }
@@ -631,6 +648,213 @@ test("Durable Object runner WebSocket forwards commands and resolves results aft
       [...storage.values.keys()].some((key) => key.startsWith("colab_mcp_bridge_row_v1:command:")),
       true,
     );
+  } finally {
+    if (previousWebSocketPair === undefined) {
+      delete (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
+    } else {
+      (globalThis as { WebSocketPair?: unknown }).WebSocketPair = previousWebSocketPair;
+    }
+    TestWebSocketPair.lastPair = null;
+  }
+});
+
+test("Durable Object stores late runner results after the pending wait is gone", async () => {
+  const previousWebSocketPair = (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
+  (globalThis as { WebSocketPair?: unknown }).WebSocketPair = TestWebSocketPair;
+  try {
+    const storage = new MemoryDurableObjectStorage();
+    const state = new MemoryDurableObjectState(storage);
+    const env = { ADMIN_SECRET: adminSecret };
+    const durableObject = new ColabBridgeSessionDurableObject(state, env);
+    state.owner = durableObject;
+
+    const created = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${adminSecret}` },
+      }),
+    );
+    const session = (await readEnvelope<CreatedSession>(created)).data;
+    assert.ok(session);
+
+    await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/runner/ws`, {
+        headers: {
+          ...runnerHeaders(session.runner_token, "do_late_result_runner", {
+            runnerInstanceId: "runner_do_late_result",
+          }),
+          Upgrade: "websocket",
+        },
+      }),
+    );
+
+    const pair = TestWebSocketPair.lastPair;
+    assert.ok(pair);
+    let sentCommand: RunnerCommandMessage | null = null;
+    pair.client.addEventListener("message", (event) => {
+      sentCommand = JSON.parse(event.data) as RunnerCommandMessage;
+    });
+
+    const commandResponse = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+        method: "POST",
+        headers: {
+          ...controllerHeaders(session.controller_token, "do_late_result_command"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ type: "ping", command_id: "cmd_late_result", deadline_ms: 1 }),
+      }),
+    );
+    assert.equal(commandResponse.status, 201);
+    const command = requireRunnerCommandMessage(sentCommand);
+
+    pair.client.send(
+      JSON.stringify({
+        protocol_version: 1,
+        session_id: command.session_id,
+        command_id: command.command_id,
+        message_id: "msg_late_result",
+        reply_to: command.message_id,
+        kind: "result",
+        type: `${command.type}_result`,
+        sent_at: new Date().toISOString(),
+        ok: true,
+        payload: { ok: true, late: true },
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const reconstructedObject = new ColabBridgeSessionDurableObject(state, env);
+    const polled = await reconstructedObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands/cmd_late_result`, {
+        headers: controllerHeaders(session.controller_token, "do_late_result_poll"),
+      }),
+    );
+    const pollEnvelope = await readEnvelope<CommandData>(polled);
+
+    assert.equal(polled.status, 200);
+    assert.equal(pollEnvelope.data?.state, "succeeded");
+    assert.deepEqual(pollEnvelope.data?.result_payload, { ok: true, late: true });
+  } finally {
+    if (previousWebSocketPair === undefined) {
+      delete (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
+    } else {
+      (globalThis as { WebSocketPair?: unknown }).WebSocketPair = previousWebSocketPair;
+    }
+    TestWebSocketPair.lastPair = null;
+  }
+});
+
+test("Durable Object ignores late job results from a replaced runner", async () => {
+  const previousWebSocketPair = (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
+  (globalThis as { WebSocketPair?: unknown }).WebSocketPair = TestWebSocketPair;
+  try {
+    const state = new MemoryDurableObjectState(new MemoryDurableObjectStorage());
+    const env = {
+      ADMIN_SECRET: adminSecret,
+      COLAB_MCP_BRIDGE_ENABLE_DANGEROUS_TOOLS: "1",
+    };
+    const durableObject = new ColabBridgeSessionDurableObject(state, env);
+    state.owner = durableObject;
+
+    const created = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${adminSecret}` },
+      }),
+    );
+    const session = (await readEnvelope<CreatedSession>(created)).data;
+    assert.ok(session);
+
+    await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/runner/ws`, {
+        headers: {
+          ...runnerHeaders(session.runner_token, "do_stale_result_old_runner", {
+            runnerInstanceId: "runner_replaced_old",
+          }),
+          Upgrade: "websocket",
+        },
+      }),
+    );
+    const stalePair = TestWebSocketPair.lastPair;
+    assert.ok(stalePair);
+    let staleCommand: RunnerCommandMessage | null = null;
+    stalePair.client.addEventListener("message", (event) => {
+      staleCommand = JSON.parse(event.data) as RunnerCommandMessage;
+    });
+
+    const startResponse = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands`, {
+        method: "POST",
+        headers: {
+          ...controllerHeaders(session.controller_token, "do_stale_result_start"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          type: "start_job",
+          command_id: "cmd_stale_runner_start",
+          deadline_ms: 1,
+          payload: { command: "sleep 60" },
+        }),
+      }),
+    );
+    const startEnvelope = await readEnvelope<CommandData>(startResponse);
+    assert.equal(startResponse.status, 201);
+    assert.equal(startEnvelope.data?.state, "unknown");
+    assert.equal(startEnvelope.data?.error?.code, "COMMAND_STATE_UNKNOWN");
+    const command = requireRunnerCommandMessage(staleCommand);
+
+    await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/runner/ws`, {
+        headers: {
+          ...runnerHeaders(session.runner_token, "do_stale_result_new_runner", {
+            runnerInstanceId: "runner_replacement_current",
+          }),
+          Upgrade: "websocket",
+        },
+      }),
+    );
+
+    stalePair.client.send(
+      JSON.stringify({
+        protocol_version: 1,
+        session_id: command.session_id,
+        command_id: command.command_id,
+        message_id: "msg_stale_runner_start_result",
+        reply_to: command.message_id,
+        kind: "result",
+        type: `${command.type}_result`,
+        sent_at: new Date().toISOString(),
+        ok: true,
+        payload: {
+          job_id: "job_from_replaced_runner",
+          status: "running",
+          started_at: "2026-06-28T10:00:02.000Z",
+        },
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const status = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/status`, {
+        headers: controllerHeaders(session.controller_token, "do_stale_result_status"),
+      }),
+    );
+    const statusEnvelope = await readEnvelope<StatusData>(status);
+
+    assert.equal(status.status, 200);
+    assert.equal(statusEnvelope.data?.runner_instance_id, "runner_replacement_current");
+    assert.equal(statusEnvelope.data?.active_job_id, null);
+
+    const polled = await durableObject.fetch(
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/commands/cmd_stale_runner_start`, {
+        headers: controllerHeaders(session.controller_token, "do_stale_result_poll"),
+      }),
+    );
+    const pollEnvelope = await readEnvelope<CommandData>(polled);
+    assert.equal(polled.status, 200);
+    assert.equal(pollEnvelope.data?.state, "unknown");
+    assert.equal(pollEnvelope.data?.result_payload, null);
   } finally {
     if (previousWebSocketPair === undefined) {
       delete (globalThis as { WebSocketPair?: unknown }).WebSocketPair;

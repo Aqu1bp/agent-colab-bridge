@@ -101,6 +101,17 @@ export interface ResultEnvelope<TPayload = unknown> {
   error?: BridgeError;
 }
 
+export interface AckEnvelope {
+  protocol_version: typeof PROTOCOL_VERSION;
+  session_id: string;
+  command_id: string;
+  message_id: string;
+  reply_to: string;
+  kind: "ack";
+  type: `${CommandType}_ack`;
+  sent_at: string;
+}
+
 export interface CommandRow {
   sessionId: string;
   commandId: string;
@@ -114,6 +125,7 @@ export interface CommandRow {
   createdAt: string;
   updatedAt: string;
   runnerInstanceId: string | null;
+  runnerMessageId: string | null;
   stateHistory: CommandState[];
 }
 
@@ -201,7 +213,7 @@ export interface ReadFileResultPayload {
   truncated: boolean;
 }
 
-export type JobStatus = "running" | "exited" | "interrupted";
+export type JobStatus = "running" | "exited" | "interrupted" | "unknown_lost";
 
 export interface JobLogEvent {
   cursor: number;
@@ -325,6 +337,22 @@ export function createResultEnvelope<TPayload>(input: {
     ok: input.ok,
     payload: input.payload,
     ...(input.error ? { error: input.error } : {}),
+  };
+}
+
+export function createAckEnvelope(input: {
+  command: CommandEnvelope;
+  sentAt?: string;
+}): AckEnvelope {
+  return {
+    protocol_version: PROTOCOL_VERSION,
+    session_id: input.command.session_id,
+    command_id: input.command.command_id,
+    message_id: newId("msg"),
+    reply_to: input.command.message_id,
+    kind: "ack",
+    type: `${input.command.type}_ack`,
+    sent_at: input.sentAt ?? nowIso(),
   };
 }
 

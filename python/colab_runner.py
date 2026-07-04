@@ -1096,6 +1096,19 @@ def result_envelope(
     return result
 
 
+def ack_envelope(command: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "protocol_version": command.get("protocol_version", 1),
+        "session_id": command["session_id"],
+        "command_id": command["command_id"],
+        "message_id": f"msg_{uuid.uuid4().hex}",
+        "reply_to": command["message_id"],
+        "kind": "ack",
+        "type": f"{command['type']}_ack",
+        "sent_at": now_iso(),
+    }
+
+
 async def connect_and_run(
     *,
     bridge_url: str,
@@ -1174,6 +1187,7 @@ async def connect_once(
         try:
             async for message in websocket:
                 envelope = json.loads(message)
+                await websocket.send(json.dumps(ack_envelope(envelope)))
                 response = await handle_command(envelope)
                 await websocket.send(json.dumps(response))
         finally:

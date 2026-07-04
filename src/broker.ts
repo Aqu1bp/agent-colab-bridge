@@ -21,7 +21,12 @@ import {
   type CommandRow,
   type CommandState,
   type CommandType,
+  type InterruptJobResultPayload,
+  type JobStatus,
+  type JobSummaryPayload,
   type ResultEnvelope,
+  type StartJobResultPayload,
+  type TailJobResultPayload,
 } from "./protocol.js";
 
 export interface SessionRow {
@@ -50,6 +55,20 @@ export interface AuditRow {
   errorCode?: string;
 }
 
+export interface JobRow {
+  sessionId: string;
+  jobId: string;
+  commandId: string;
+  runnerInstanceId: string | null;
+  status: JobStatus;
+  startedAt: string;
+  endedAt: string | null;
+  exitCode: number | null;
+  interruptedAt: string | null;
+  updatedAt: string;
+  name?: string;
+}
+
 export interface BridgeRepository {
   insertSession(session: SessionRow): void;
   getSession(sessionId: string): SessionRow | undefined;
@@ -57,6 +76,9 @@ export interface BridgeRepository {
   insertCommand(command: CommandRow): void;
   getCommand(sessionId: string, commandId: string): CommandRow | undefined;
   updateCommand(command: CommandRow): void;
+  upsertJob(job: JobRow): void;
+  getJob(sessionId: string, jobId: string): JobRow | undefined;
+  listJobs(sessionId: string): JobRow[];
   insertAudit(row: AuditRow): void;
   listAudit(sessionId: string): AuditRow[];
 }
@@ -64,6 +86,7 @@ export interface BridgeRepository {
 export class InMemoryBridgeRepository implements BridgeRepository {
   private readonly sessions = new Map<string, SessionRow>();
   private readonly commands = new Map<string, CommandRow>();
+  private readonly jobs = new Map<string, JobRow>();
   private readonly audits: AuditRow[] = [];
 
   insertSession(session: SessionRow): void {
@@ -92,6 +115,21 @@ export class InMemoryBridgeRepository implements BridgeRepository {
     this.commands.set(this.commandKey(command.sessionId, command.commandId), structuredClone(command));
   }
 
+  upsertJob(job: JobRow): void {
+    this.jobs.set(this.jobKey(job.sessionId, job.jobId), structuredClone(job));
+  }
+
+  getJob(sessionId: string, jobId: string): JobRow | undefined {
+    const job = this.jobs.get(this.jobKey(sessionId, jobId));
+    return job ? structuredClone(job) : undefined;
+  }
+
+  listJobs(sessionId: string): JobRow[] {
+    return [...this.jobs.values()]
+      .filter((job) => job.sessionId === sessionId)
+      .map((job) => structuredClone(job));
+  }
+
   insertAudit(row: AuditRow): void {
     this.audits.push(structuredClone(row));
   }
@@ -102,6 +140,10 @@ export class InMemoryBridgeRepository implements BridgeRepository {
 
   private commandKey(sessionId: string, commandId: string): string {
     return `${sessionId}:${commandId}`;
+  }
+
+  private jobKey(sessionId: string, jobId: string): string {
+    return `${sessionId}:${jobId}`;
   }
 }
 
@@ -120,7 +162,7 @@ export interface BrokerStatus {
   runner_started_at: string | null;
   last_heartbeat_at: string | null;
   project_root: "/content/project";
-  active_job_id: null;
+  active_job_id: string | null;
   session_expires_at: string;
 }
 
@@ -143,6 +185,8 @@ export class BrokerError extends Error {
     this.bridgeError = error;
   }
 }
+
+export class RunnerResultUnavailableError extends Error {}
 
 export class SessionBroker {
   private readonly runners = new Map<string, RunnerHandler>();
@@ -211,12 +255,19 @@ export class SessionBroker {
     now = new Date(),
   ): void {
     const session = this.requireRunner(sessionId, auth, now);
+    const previousRunnerInstanceId = session.runnerInstanceId;
     const attachEvent =
       session.runnerInstanceId === null
         ? "runner_attach"
         : session.runnerInstanceId === metadata.runnerInstanceId
           ? "runner_reconnect"
           : "runner_restart";
+    if (
+      previousRunnerInstanceId &&
+      previousRunnerInstanceId !== metadata.runnerInstanceId
+    ) {
+      this.markRunningJobsLost(sessionId, previousRunnerInstanceId, now);
+    }
     session.runnerConnected = true;
     session.runnerInstanceId = metadata.runnerInstanceId;
     session.kernelStartedAt = metadata.kernelStartedAt;
@@ -256,6 +307,13 @@ export class SessionBroker {
     now = new Date(),
   ): void {
     const session = this.requireLiveSession(sessionId, now);
+    const previousRunnerInstanceId = session.runnerInstanceId;
+    if (
+      previousRunnerInstanceId &&
+      previousRunnerInstanceId !== metadata.runnerInstanceId
+    ) {
+      this.markRunningJobsLost(sessionId, previousRunnerInstanceId, now);
+    }
     session.runnerConnected = true;
     session.runnerInstanceId = metadata.runnerInstanceId;
     session.kernelStartedAt = metadata.kernelStartedAt;
@@ -342,6 +400,7 @@ export class SessionBroker {
       createdAt,
       updatedAt: createdAt,
       runnerInstanceId: null,
+      runnerMessageId: null,
       stateHistory: ["accepted"],
     };
     this.repository.insertCommand(command);
@@ -364,8 +423,6 @@ export class SessionBroker {
       return this.requireCommand(sessionId, commandId);
     }
 
-    command.runnerInstanceId = session.runnerInstanceId;
-    this.transitionCommand(command, "sent_to_runner", now);
     const envelope = createCommandEnvelope({
       sessionId,
       commandId,
@@ -374,26 +431,38 @@ export class SessionBroker {
       deadlineAt,
       sentAt: now.toISOString(),
     });
+    command.runnerInstanceId = session.runnerInstanceId;
+    command.runnerMessageId = envelope.message_id;
+    this.transitionCommand(command, "sent_to_runner", now);
 
     let result: ResultEnvelope;
     try {
       result = await runner(envelope);
-    } catch {
+    } catch (error) {
       const deliveredCommand = this.requireCommand(sessionId, commandId);
-      this.failCommand(
-        deliveredCommand,
-        bridgeError("INTERNAL_ERROR", "Runner failed while executing the command."),
-        now,
-      );
+      if (error instanceof RunnerResultUnavailableError) {
+        this.markCommandUnknown(
+          deliveredCommand,
+          bridgeError("COMMAND_STATE_UNKNOWN", error.message, true),
+          now,
+        );
+      } else {
+        this.failCommand(
+          deliveredCommand,
+          bridgeError("INTERNAL_ERROR", "Runner failed while executing the command."),
+          now,
+        );
+      }
       return this.requireCommand(sessionId, commandId);
     }
 
     const deliveredCommand = this.requireCommand(sessionId, commandId);
-    if (
-      result.session_id !== sessionId ||
-      result.command_id !== commandId ||
-      result.reply_to !== envelope.message_id
-    ) {
+    const applied = this.applyRunnerResult(
+      result,
+      { runnerInstanceId: session.runnerInstanceId, replyTo: envelope.message_id },
+      now,
+    );
+    if (!applied) {
       this.failCommand(
         deliveredCommand,
         bridgeError("INTERNAL_ERROR", "Runner returned a result envelope that does not match the command."),
@@ -401,17 +470,6 @@ export class SessionBroker {
         result.payload,
       );
       return this.requireCommand(sessionId, commandId);
-    }
-
-    if (result.ok) {
-      this.completeCommand(deliveredCommand, result.payload, now);
-    } else {
-      this.failCommand(
-        deliveredCommand,
-        result.error ?? bridgeError("INTERNAL_ERROR", "Runner returned a failed result without an error."),
-        now,
-        result.payload,
-      );
     }
     return this.requireCommand(sessionId, commandId);
   }
@@ -423,6 +481,80 @@ export class SessionBroker {
       this.transitionCommand(command, "runner_acknowledged", now);
     }
     return this.requireCommand(sessionId, commandId);
+  }
+
+  acknowledgeCommandFromRunner(
+    sessionId: string,
+    runnerInstanceId: string | null,
+    commandId: string,
+    replyTo: string,
+    now = new Date(),
+  ): CommandRow | null {
+    const command = this.repository.getCommand(sessionId, commandId);
+    if (!command) {
+      return null;
+    }
+    if (command.runnerMessageId && command.runnerMessageId !== replyTo) {
+      return null;
+    }
+    if (!this.isCurrentRunnerInstance(sessionId, runnerInstanceId)) {
+      return null;
+    }
+    if (runnerInstanceId && command.runnerInstanceId && command.runnerInstanceId !== runnerInstanceId) {
+      return null;
+    }
+    if (!isFinalCommandState(command.state)) {
+      this.transitionCommand(command, "runner_acknowledged", now);
+    }
+    return this.requireCommand(sessionId, commandId);
+  }
+
+  applyRunnerResult(
+    result: ResultEnvelope,
+    expected: { runnerInstanceId?: string | null; replyTo?: string } = {},
+    now = new Date(),
+  ): CommandRow | null {
+    const command = this.repository.getCommand(result.session_id, result.command_id);
+    if (!command) {
+      return null;
+    }
+    if (expected.replyTo && result.reply_to !== expected.replyTo) {
+      return null;
+    }
+    if (command.runnerMessageId && result.reply_to !== command.runnerMessageId) {
+      return null;
+    }
+    if (!this.isCurrentRunnerInstance(result.session_id, expected.runnerInstanceId ?? null)) {
+      return null;
+    }
+    if (
+      expected.runnerInstanceId &&
+      command.runnerInstanceId &&
+      command.runnerInstanceId !== expected.runnerInstanceId
+    ) {
+      return null;
+    }
+    if (
+      isFinalCommandState(command.state) &&
+      command.state !== "unknown" &&
+      !(command.state === "failed" && command.error?.code === "COMMAND_STATE_UNKNOWN")
+    ) {
+      return command;
+    }
+
+    if (result.ok) {
+      this.completeCommand(command, result.payload, now);
+    } else {
+      this.failCommand(
+        command,
+        result.error ?? bridgeError("INTERNAL_ERROR", "Runner returned a failed result without an error."),
+        now,
+        result.payload,
+      );
+    }
+    const updated = this.requireCommand(result.session_id, result.command_id);
+    this.applyJobMetadataFromResult(updated, result, now);
+    return this.requireCommand(result.session_id, result.command_id);
   }
 
   getCommandResult(sessionId: string, auth: AuthAttempt, commandId: string, now = new Date()): CommandRow {
@@ -451,11 +583,159 @@ export class SessionBroker {
     this.transitionCommand(command, "failed", now);
   }
 
+  private markCommandUnknown(command: CommandRow, error: BridgeError, now: Date): void {
+    command.error = error;
+    this.transitionCommand(command, "unknown", now);
+  }
+
   private transitionCommand(command: CommandRow, nextState: CommandState, now: Date): void {
+    if (command.state === nextState) {
+      command.updatedAt = now.toISOString();
+      this.repository.updateCommand(command);
+      return;
+    }
     command.state = nextState;
     command.updatedAt = now.toISOString();
     command.stateHistory.push(nextState);
     this.repository.updateCommand(command);
+  }
+
+  private applyJobMetadataFromResult(command: CommandRow, result: ResultEnvelope, now: Date): void {
+    if (!result.ok) {
+      return;
+    }
+
+    if (command.type === "start_job") {
+      this.recordStartedJob(command, result.payload, now);
+      return;
+    }
+    if (command.type === "list_jobs") {
+      this.recordListedJobs(command, result.payload, now);
+      return;
+    }
+    if (command.type === "job_status") {
+      this.recordJobSummary(command, result.payload, now);
+      return;
+    }
+    if (command.type === "tail_job") {
+      this.recordTailJob(command, result.payload, now);
+      return;
+    }
+    if (command.type === "interrupt_job") {
+      this.recordInterruptedJob(command, result.payload, now);
+    }
+  }
+
+  private recordStartedJob(command: CommandRow, payload: unknown, now: Date): void {
+    if (!isStartJobResultPayload(payload)) {
+      return;
+    }
+    const request = isRecord(command.requestPayload) ? command.requestPayload : {};
+    const name = typeof request.name === "string" ? request.name : undefined;
+    this.repository.upsertJob({
+      sessionId: command.sessionId,
+      jobId: payload.job_id,
+      commandId: command.commandId,
+      runnerInstanceId: command.runnerInstanceId,
+      status: payload.status,
+      startedAt: payload.started_at,
+      endedAt: null,
+      exitCode: null,
+      interruptedAt: null,
+      updatedAt: now.toISOString(),
+      ...(name ? { name } : {}),
+    });
+  }
+
+  private recordListedJobs(command: CommandRow, payload: unknown, now: Date): void {
+    if (!isRecord(payload) || !Array.isArray(payload.jobs)) {
+      return;
+    }
+    for (const job of payload.jobs) {
+      this.recordJobSummary(command, job, now);
+    }
+  }
+
+  private recordJobSummary(command: CommandRow, payload: unknown, now: Date): void {
+    if (!isJobSummaryPayload(payload)) {
+      return;
+    }
+    const existing = this.repository.getJob(command.sessionId, payload.job_id);
+    this.repository.upsertJob({
+      sessionId: command.sessionId,
+      jobId: payload.job_id,
+      commandId: existing?.commandId ?? command.commandId,
+      runnerInstanceId: existing?.runnerInstanceId ?? command.runnerInstanceId,
+      status: payload.status,
+      startedAt: payload.started_at,
+      endedAt: payload.status === "running" ? null : (existing?.endedAt ?? now.toISOString()),
+      exitCode: payload.exit_code,
+      interruptedAt: payload.interrupted_at,
+      updatedAt: now.toISOString(),
+      ...(payload.name ?? existing?.name ? { name: payload.name ?? existing?.name } : {}),
+    });
+  }
+
+  private recordTailJob(command: CommandRow, payload: unknown, now: Date): void {
+    if (!isTailJobResultPayload(payload)) {
+      return;
+    }
+    const existing = this.repository.getJob(command.sessionId, payload.job_id);
+    if (!existing) {
+      return;
+    }
+    this.repository.upsertJob({
+      ...existing,
+      status: payload.status,
+      endedAt: payload.status === "running" ? null : (existing.endedAt ?? now.toISOString()),
+      exitCode: payload.exit_code,
+      updatedAt: now.toISOString(),
+    });
+  }
+
+  private recordInterruptedJob(command: CommandRow, payload: unknown, now: Date): void {
+    if (!isInterruptJobResultPayload(payload)) {
+      return;
+    }
+    const existing = this.repository.getJob(command.sessionId, payload.job_id);
+    const request = isRecord(command.requestPayload) ? command.requestPayload : {};
+    this.repository.upsertJob({
+      sessionId: command.sessionId,
+      jobId: payload.job_id,
+      commandId: existing?.commandId ?? command.commandId,
+      runnerInstanceId: existing?.runnerInstanceId ?? command.runnerInstanceId,
+      status: payload.status,
+      startedAt: existing?.startedAt ?? now.toISOString(),
+      endedAt: payload.status === "running" ? null : payload.interrupted_at,
+      exitCode: payload.exit_code,
+      interruptedAt: payload.interrupted_at,
+      updatedAt: now.toISOString(),
+      ...(existing?.name ?? (typeof request.name === "string" ? request.name : undefined)
+        ? { name: existing?.name ?? (request.name as string) }
+        : {}),
+    });
+  }
+
+  private markRunningJobsLost(sessionId: string, runnerInstanceId: string, now: Date): void {
+    for (const job of this.repository.listJobs(sessionId)) {
+      if (job.status !== "running" || job.runnerInstanceId !== runnerInstanceId) {
+        continue;
+      }
+      this.repository.upsertJob({
+        ...job,
+        status: "unknown_lost",
+        endedAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+    }
+  }
+
+  private isCurrentRunnerInstance(sessionId: string, runnerInstanceId: string | null): boolean {
+    if (!runnerInstanceId) {
+      return true;
+    }
+    const session = this.repository.getSession(sessionId);
+    return Boolean(session && session.runnerInstanceId === runnerInstanceId);
   }
 
   private requireController(sessionId: string, auth: AuthAttempt, now: Date): SessionRow {
@@ -519,6 +799,14 @@ export class SessionBroker {
   }
 
   private toStatus(session: SessionRow, now: Date): BrokerStatus {
+    const activeJob = this.repository
+      .listJobs(session.sessionId)
+      .filter(
+        (job) =>
+          job.status === "running" &&
+          (!session.runnerInstanceId || job.runnerInstanceId === session.runnerInstanceId),
+      )
+      .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))[0];
     return {
       session_id: session.sessionId,
       runner_connected: this.isRunnerFresh(session, now),
@@ -528,7 +816,7 @@ export class SessionBroker {
       runner_started_at: session.runnerStartedAt,
       last_heartbeat_at: session.lastHeartbeatAt,
       project_root: "/content/project",
-      active_job_id: null,
+      active_job_id: activeJob?.jobId ?? null,
       session_expires_at: session.expiresAt,
     };
   }
@@ -575,4 +863,57 @@ export class SessionBroker {
     }
     throw error;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStartJobResultPayload(value: unknown): value is StartJobResultPayload {
+  return (
+    isRecord(value) &&
+    typeof value.job_id === "string" &&
+    value.status === "running" &&
+    typeof value.started_at === "string"
+  );
+}
+
+function isJobStatus(value: unknown): value is JobStatus {
+  return (
+    value === "running" ||
+    value === "exited" ||
+    value === "interrupted" ||
+    value === "unknown_lost"
+  );
+}
+
+function isJobSummaryPayload(value: unknown): value is JobSummaryPayload {
+  return (
+    isRecord(value) &&
+    typeof value.job_id === "string" &&
+    isJobStatus(value.status) &&
+    typeof value.started_at === "string" &&
+    (typeof value.exit_code === "number" || value.exit_code === null) &&
+    (typeof value.interrupted_at === "string" || value.interrupted_at === null) &&
+    typeof value.active === "boolean"
+  );
+}
+
+function isTailJobResultPayload(value: unknown): value is TailJobResultPayload {
+  return (
+    isRecord(value) &&
+    typeof value.job_id === "string" &&
+    isJobStatus(value.status) &&
+    (typeof value.exit_code === "number" || value.exit_code === null)
+  );
+}
+
+function isInterruptJobResultPayload(value: unknown): value is InterruptJobResultPayload {
+  return (
+    isRecord(value) &&
+    typeof value.job_id === "string" &&
+    isJobStatus(value.status) &&
+    (typeof value.exit_code === "number" || value.exit_code === null) &&
+    typeof value.interrupted_at === "string"
+  );
 }

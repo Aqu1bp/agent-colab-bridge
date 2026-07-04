@@ -227,6 +227,94 @@ asyncio.run(main())
   }
 });
 
+test("Colab runner sends an ACK before executing a WebSocket command", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "colab-runner-python-ack-"));
+  try {
+    const probe = `
+import asyncio
+import importlib.util
+import json
+import os
+import sys
+import types
+
+runner_path = sys.argv[1]
+project_root = sys.argv[2]
+os.environ["COLAB_BRIDGE_PROJECT_ROOT"] = project_root
+spec = importlib.util.spec_from_file_location("colab_runner", runner_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules["colab_runner"] = module
+spec.loader.exec_module(module)
+
+sent = []
+commands = [{
+    "protocol_version": 1,
+    "session_id": "sess_python_ack",
+    "command_id": "cmd_python_ack",
+    "message_id": "msg_python_ack",
+    "kind": "command",
+    "type": "ping",
+    "sent_at": "2026-06-29T00:00:00Z",
+    "deadline_at": "2026-06-29T00:00:30Z",
+    "payload": {},
+}]
+
+class FakeWebSocket:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if commands:
+            return json.dumps(commands.pop(0))
+        raise StopAsyncIteration
+
+    async def send(self, message):
+        sent.append(json.loads(message))
+
+def connect(*args, **kwargs):
+    return FakeWebSocket()
+
+sys.modules["websockets"] = types.SimpleNamespace(connect=connect)
+
+async def main():
+    await module.connect_once(
+        bridge_url="https://bridge.test",
+        session_id="sess_python_ack",
+        runner_token="runner_secret",
+        runner_id="runner_python_ack",
+        kernel_started_at="2026-06-29T00:00:00Z",
+        runner_started_at="2026-06-29T00:00:00Z",
+    )
+    print(json.dumps(sent))
+
+asyncio.run(main())
+`;
+    const result = spawnSync("python3", ["-", resolve("python/colab_runner.py"), projectRoot], {
+      cwd: resolve("."),
+      input: probe,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.length, 2);
+    assert.equal(output[0].kind, "ack");
+    assert.equal(output[0].command_id, "cmd_python_ack");
+    assert.equal(output[0].reply_to, "msg_python_ack");
+    assert.equal(output[1].kind, "result");
+    assert.deepEqual(output[1].payload, { ok: true, pong: true });
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("Colab runner write_file creates safe missing parent directories", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "colab-runner-python-files-"));
   try {

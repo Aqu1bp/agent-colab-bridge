@@ -404,6 +404,15 @@ test("dangerous command types are accepted through HTTP when explicitly enabled"
   assert.equal(startEnvelope.data?.type, "start_job");
   assert.equal(startResult.status, "running");
   assert.equal(startResult.job_id.startsWith("job_"), true);
+
+  const status = await handler(
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/status`, {
+      headers: controllerHeaders(session.controller_token, "status_after_job_start"),
+    }),
+  );
+  const statusEnvelope = await readEnvelope<{ active_job_id: string | null }>(status);
+  assert.equal(status.status, 200);
+  assert.equal(statusEnvelope.data?.active_job_id, startResult.job_id);
 });
 
 test("command result can be polled after original command response", async () => {

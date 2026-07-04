@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BrokerError, SessionBroker } from "../src/broker.js";
+import { BrokerError, InMemoryBridgeRepository, SessionBroker } from "../src/broker.js";
 import { FakeRunner } from "../src/fake-runner.js";
 import { createResultEnvelope } from "../src/protocol.js";
 import { authAt, authFactory, fixedAuth } from "./helpers.js";
@@ -295,6 +295,61 @@ test("runner reconnect and restart update metadata explicitly", () => {
   assert.equal(auditEvents.includes("runner_attach"), true);
   assert.equal(auditEvents.includes("runner_reconnect"), true);
   assert.equal(auditEvents.includes("runner_restart"), true);
+});
+
+test("restored replacement runner marks previous running jobs lost", async () => {
+  const repository = new InMemoryBridgeRepository();
+  const broker = new SessionBroker(repository);
+  const session = broker.createSession();
+  const controllerAuth = authFactory(session.controllerToken, "controller");
+  const runnerAuth = authFactory(session.runnerToken, "runner");
+
+  broker.attachRunner(
+    session.sessionId,
+    runnerAuth(),
+    {
+      runnerInstanceId: "runner_restore_old",
+      kernelStartedAt: "2026-06-28T10:00:00.000Z",
+      runnerStartedAt: "2026-06-28T10:00:01.000Z",
+    },
+    (envelope) =>
+      createResultEnvelope({
+        command: envelope,
+        ok: true,
+        payload: {
+          job_id: "job_restore_old",
+          status: "running",
+          started_at: "2026-06-28T10:00:02.000Z",
+        },
+      }),
+  );
+
+  await broker.createCommand(session.sessionId, controllerAuth(), {
+    type: "start_job",
+    payload: { command: "sleep 60" },
+  });
+  assert.equal(repository.listJobs(session.sessionId)[0]?.status, "running");
+
+  broker.restoreRunnerConnection(
+    session.sessionId,
+    {
+      runnerInstanceId: "runner_restore_new",
+      kernelStartedAt: "2026-06-28T10:01:00.000Z",
+      runnerStartedAt: "2026-06-28T10:01:01.000Z",
+    },
+    () => {
+      throw new Error("should not receive commands");
+    },
+    new Date("2026-06-28T10:01:02.000Z"),
+  );
+
+  const jobs = repository.listJobs(session.sessionId);
+  assert.equal(jobs[0]?.status, "unknown_lost");
+  assert.equal(jobs[0]?.endedAt, "2026-06-28T10:01:02.000Z");
+
+  const status = broker.getStatus(session.sessionId, controllerAuth());
+  assert.equal(status.runner_instance_id, "runner_restore_new");
+  assert.equal(status.active_job_id, null);
 });
 
 test("duplicate command id returns existing command without re-executing", async () => {

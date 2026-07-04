@@ -3,7 +3,9 @@ import {
   type AuditRow,
   type BridgeRepository,
   BrokerError,
+  type JobRow,
   type RunnerMetadata,
+  RunnerResultUnavailableError,
   type SessionRow,
   SessionBroker,
 } from "./broker.js";
@@ -12,6 +14,7 @@ import {
   bridgeError,
   newId,
   type BridgeError,
+  type AckEnvelope,
   type CommandEnvelope,
   type CommandRow,
   type ResultEnvelope,
@@ -73,6 +76,7 @@ declare const WebSocketPair: WebSocketPairConstructorLike | undefined;
 interface WorkerBrokerStateSnapshot {
   sessions: SessionRow[];
   commands: CommandRow[];
+  jobs?: JobRow[];
   audits: AuditRow[];
   nonces: NonceSnapshotRow[];
 }
@@ -80,6 +84,7 @@ interface WorkerBrokerStateSnapshot {
 interface RowStorageIndex {
   sessions: string[];
   commands: string[];
+  jobs?: string[];
   audits: string[];
   nonces: string[];
 }
@@ -287,9 +292,10 @@ export class ColabBridgeSessionDurableObject {
       return false;
     }
 
-    const [sessions, commands, audits, nonces] = await Promise.all([
+    const [sessions, commands, jobs, audits, nonces] = await Promise.all([
       this.loadIndexedRows<SessionRow>(index.sessions),
       this.loadIndexedRows<CommandRow>(index.commands),
+      this.loadIndexedRows<JobRow>(index.jobs ?? []),
       this.loadIndexedRows<AuditRow>(index.audits),
       this.loadIndexedRows<NonceSnapshotRow>(index.nonces),
     ]);
@@ -297,6 +303,7 @@ export class ColabBridgeSessionDurableObject {
     this.repository.hydrateRows({
       sessions: sessions.map((entry) => entry.row),
       commands: commands.map((entry) => entry.row),
+      jobs: jobs.map((entry) => entry.row),
       audits,
     });
     this.nonceRepository.hydrateRows(nonces.map((entry) => entry.row));
@@ -355,9 +362,43 @@ export class ColabBridgeSessionDurableObject {
       return;
     }
 
+    if (isAckEnvelopeLike(parsed)) {
+      if (attachment) {
+        if (parsed.session_id !== attachment.sessionId) {
+          socket.close(1008, "Runner ACK session mismatch.");
+          return;
+        }
+        this.broker.acknowledgeCommandFromRunner(
+          attachment.sessionId,
+          attachment.runnerInstanceId,
+          parsed.command_id,
+          parsed.reply_to,
+        );
+        this.broker.recordRunnerActivity(attachment.sessionId, attachment.runnerInstanceId);
+        await this.persistState();
+      }
+      return;
+    }
+
     if (!isResultEnvelopeLike(parsed)) {
       socket.close(1003, "Unsupported runner message.");
       return;
+    }
+
+    if (attachment && parsed.session_id !== attachment.sessionId) {
+      socket.close(1008, "Runner result session mismatch.");
+      return;
+    }
+
+    const applied = attachment
+      ? this.broker.applyRunnerResult(parsed, {
+          runnerInstanceId: attachment.runnerInstanceId,
+          replyTo: parsed.reply_to,
+        })
+      : null;
+    if (attachment) {
+      this.broker.recordRunnerActivity(attachment.sessionId, attachment.runnerInstanceId);
+      await this.persistState();
     }
 
     const key = pendingResultKey(parsed.command_id, parsed.reply_to);
@@ -365,12 +406,13 @@ export class ColabBridgeSessionDurableObject {
     if (pending) {
       clearTimeout(pending.timeout);
       this.pendingRunnerResults.delete(key);
-      pending.resolve(parsed);
-    }
-
-    if (attachment) {
-      this.broker.recordRunnerActivity(attachment.sessionId, attachment.runnerInstanceId);
-      await this.persistState();
+      if (applied || !attachment) {
+        pending.resolve(parsed);
+      } else {
+        pending.reject(
+          new RunnerResultUnavailableError("Runner returned a result envelope that does not match the command."),
+        );
+      }
     }
   }
 
@@ -471,16 +513,21 @@ export class ColabBridgeSessionDurableObject {
     }
   }
 
-  private sendCommandToRunnerSocket(
+  private async sendCommandToRunnerSocket(
     socket: WorkerWebSocketLike,
     envelope: CommandEnvelope,
   ): Promise<ResultEnvelope> {
+    await this.persistState();
     const timeoutMs = Math.max(1_000, Date.parse(envelope.deadline_at) - Date.now() + 1_000);
     return new Promise((resolve, reject) => {
       const key = pendingResultKey(envelope.command_id, envelope.message_id);
       const timeout = setTimeout(() => {
         this.pendingRunnerResults.delete(key);
-        reject(new Error("Runner command timed out waiting for WebSocket result."));
+        reject(
+          new RunnerResultUnavailableError(
+            "Runner did not return a result before the command deadline; command state is unknown.",
+          ),
+        );
       }, timeoutMs);
 
       this.pendingRunnerResults.set(key, { socket, timeout, resolve, reject });
@@ -489,7 +536,13 @@ export class ColabBridgeSessionDurableObject {
       } catch (error) {
         clearTimeout(timeout);
         this.pendingRunnerResults.delete(key);
-        reject(error);
+        reject(
+          new RunnerResultUnavailableError(
+            error instanceof Error
+              ? error.message
+              : "Runner WebSocket send failed before a result was received.",
+          ),
+        );
       }
     });
   }
@@ -501,7 +554,7 @@ export class ColabBridgeSessionDurableObject {
       }
       clearTimeout(pending.timeout);
       this.pendingRunnerResults.delete(key);
-      pending.reject(new Error(error.message));
+      pending.reject(new RunnerResultUnavailableError(error.message));
     }
   }
 }
@@ -711,6 +764,22 @@ function isResultEnvelopeLike(value: unknown): value is ResultEnvelope {
   );
 }
 
+function isAckEnvelopeLike(value: unknown): value is AckEnvelope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    record.kind === "ack" &&
+    typeof record.session_id === "string" &&
+    typeof record.command_id === "string" &&
+    typeof record.reply_to === "string" &&
+    typeof record.message_id === "string" &&
+    typeof record.type === "string"
+  );
+}
+
 function pendingResultKey(commandId: string, replyTo: string): string {
   return `${commandId}:${replyTo}`;
 }
@@ -754,6 +823,7 @@ function statusForWorkerBrokerError(error: BrokerError): number {
 class RowBackedBridgeRepository implements BridgeRepository {
   private readonly sessions = new Map<string, SessionRow>();
   private readonly commands = new Map<string, CommandRow>();
+  private readonly jobs = new Map<string, JobRow>();
   private audits: Array<{ storageKey: string; row: AuditRow }> = [];
   private readonly dirtyRows = new Map<string, unknown>();
   private readonly deletedKeys = new Set<string>();
@@ -785,6 +855,21 @@ class RowBackedBridgeRepository implements BridgeRepository {
     this.setCommand(command, true);
   }
 
+  upsertJob(job: JobRow): void {
+    this.setJob(job, true);
+  }
+
+  getJob(sessionId: string, jobId: string): JobRow | undefined {
+    const job = this.jobs.get(this.jobKey(sessionId, jobId));
+    return job ? structuredClone(job) : undefined;
+  }
+
+  listJobs(sessionId: string): JobRow[] {
+    return [...this.jobs.values()]
+      .filter((job) => job.sessionId === sessionId)
+      .map((job) => structuredClone(job));
+  }
+
   insertAudit(row: AuditRow): void {
     const stored = {
       storageKey: auditRowStorageKey(row.sessionId, row.at, this.auditSequence++),
@@ -804,10 +889,12 @@ class RowBackedBridgeRepository implements BridgeRepository {
   hydrateRows(input: {
     sessions: SessionRow[];
     commands: CommandRow[];
+    jobs?: JobRow[];
     audits: Array<{ storageKey: string; row: AuditRow }>;
   }): void {
     this.sessions.clear();
     this.commands.clear();
+    this.jobs.clear();
     this.audits = [];
     this.dirtyRows.clear();
     this.deletedKeys.clear();
@@ -818,6 +905,9 @@ class RowBackedBridgeRepository implements BridgeRepository {
     }
     for (const command of input.commands) {
       this.setCommand(command, false);
+    }
+    for (const job of input.jobs ?? []) {
+      this.setJob(job, false);
     }
     for (const audit of input.audits) {
       this.audits.push({
@@ -831,6 +921,7 @@ class RowBackedBridgeRepository implements BridgeRepository {
   hydrateLegacySnapshot(snapshot: Omit<WorkerBrokerStateSnapshot, "nonces">): void {
     this.sessions.clear();
     this.commands.clear();
+    this.jobs.clear();
     this.audits = [];
     this.dirtyRows.clear();
     this.deletedKeys.clear();
@@ -841,6 +932,9 @@ class RowBackedBridgeRepository implements BridgeRepository {
     }
     for (const command of snapshot.commands ?? []) {
       this.setCommand(command, true);
+    }
+    for (const job of snapshot.jobs ?? []) {
+      this.setJob(job, true);
     }
     for (const audit of snapshot.audits ?? []) {
       const stored = {
@@ -853,12 +947,13 @@ class RowBackedBridgeRepository implements BridgeRepository {
     }
   }
 
-  indexKeys(): Pick<RowStorageIndex, "sessions" | "commands" | "audits"> {
+  indexKeys(): Pick<RowStorageIndex, "sessions" | "commands" | "jobs" | "audits"> {
     return {
       sessions: [...this.sessions.keys()].map((sessionId) => sessionRowStorageKey(sessionId)),
       commands: [...this.commands.values()].map((command) =>
         commandRowStorageKey(command.sessionId, command.commandId),
       ),
+      jobs: [...this.jobs.values()].map((job) => jobRowStorageKey(job.sessionId, job.jobId)),
       audits: this.audits.map((entry) => entry.storageKey),
     };
   }
@@ -882,10 +977,19 @@ class RowBackedBridgeRepository implements BridgeRepository {
   }
 
   private setCommand(command: CommandRow, dirty: boolean): void {
-    const row = structuredClone(command);
+    const row = structuredClone(command) as CommandRow;
+    row.runnerMessageId ??= null;
     this.commands.set(this.commandKey(row.sessionId, row.commandId), row);
     if (dirty) {
       this.markDirty(commandRowStorageKey(row.sessionId, row.commandId), row);
+    }
+  }
+
+  private setJob(job: JobRow, dirty: boolean): void {
+    const row = structuredClone(job);
+    this.jobs.set(this.jobKey(row.sessionId, row.jobId), row);
+    if (dirty) {
+      this.markDirty(jobRowStorageKey(row.sessionId, row.jobId), row);
     }
   }
 
@@ -914,6 +1018,10 @@ class RowBackedBridgeRepository implements BridgeRepository {
 
   private commandKey(sessionId: string, commandId: string): string {
     return `${sessionId}:${commandId}`;
+  }
+
+  private jobKey(sessionId: string, jobId: string): string {
+    return `${sessionId}:${jobId}`;
   }
 }
 
@@ -1027,6 +1135,7 @@ function hasIndexedRows(index: RowStorageIndex): boolean {
   return (
     index.sessions.length > 0 ||
     index.commands.length > 0 ||
+    (index.jobs?.length ?? 0) > 0 ||
     index.audits.length > 0 ||
     index.nonces.length > 0
   );
@@ -1038,6 +1147,10 @@ function sessionRowStorageKey(sessionId: string): string {
 
 function commandRowStorageKey(sessionId: string, commandId: string): string {
   return `${rowStoragePrefix}:command:${encodeStorageKeyPart(sessionId)}:${encodeStorageKeyPart(commandId)}`;
+}
+
+function jobRowStorageKey(sessionId: string, jobId: string): string {
+  return `${rowStoragePrefix}:job:${encodeStorageKeyPart(sessionId)}:${encodeStorageKeyPart(jobId)}`;
 }
 
 function auditRowStorageKey(sessionId: string, at: string, sequence: number): string {
