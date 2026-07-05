@@ -1,4 +1,5 @@
-import { BrokerError, SessionBroker, } from "./broker.js";
+import { DEFAULT_AUTH_SKEW_MS } from "./auth.js";
+import { BrokerError, RunnerResultUnavailableError, SessionBroker, } from "./broker.js";
 import { createBridgeHttpHandler } from "./http.js";
 import { bridgeError, newId, } from "./protocol.js";
 const persistedStateKey = "colab_mcp_bridge_state_v1";
@@ -7,6 +8,7 @@ const rowStorageIndexKey = `${rowStoragePrefix}:index`;
 const maxAuditRowsPerSession = 200;
 const maxNoncesPerSessionSide = 1_000;
 const nonceRetentionMs = 10 * 60 * 1000;
+const protectedNonceReplayWindowMs = DEFAULT_AUTH_SKEW_MS;
 const internalSessionIdHeader = "x-colab-bridge-session-id";
 const fallbackBrokers = new WeakMap();
 const fallbackBrokerKey = {};
@@ -28,7 +30,10 @@ export function createWorkerFetchHandler(env = {}, options = {}) {
         if (!adminSecret) {
             return workerJsonError(500, bridgeError("INTERNAL_ERROR", "Worker ADMIN_SECRET is not configured.", false));
         }
-        if (!options.broker && env.COLAB_BRIDGE_SESSIONS) {
+        if (!options.broker) {
+            if (!env.COLAB_BRIDGE_SESSIONS) {
+                return workerJsonError(500, bridgeError("INTERNAL_ERROR", "Worker COLAB_BRIDGE_SESSIONS Durable Object binding is not configured.", false));
+            }
             const routed = routeDurableObjectRequest(request, env.COLAB_BRIDGE_SESSIONS);
             if (routed) {
                 return routed;
@@ -136,15 +141,17 @@ export class ColabBridgeSessionDurableObject {
         if (!index || !hasIndexedRows(index)) {
             return false;
         }
-        const [sessions, commands, audits, nonces] = await Promise.all([
+        const [sessions, commands, jobs, audits, nonces] = await Promise.all([
             this.loadIndexedRows(index.sessions),
             this.loadIndexedRows(index.commands),
+            this.loadIndexedRows(index.jobs ?? []),
             this.loadIndexedRows(index.audits),
             this.loadIndexedRows(index.nonces),
         ]);
         this.repository.hydrateRows({
             sessions: sessions.map((entry) => entry.row),
             commands: commands.map((entry) => entry.row),
+            jobs: jobs.map((entry) => entry.row),
             audits,
         });
         this.nonceRepository.hydrateRows(nonces.map((entry) => entry.row));
@@ -191,20 +198,47 @@ export class ColabBridgeSessionDurableObject {
             }
             return;
         }
+        if (isAckEnvelopeLike(parsed)) {
+            if (attachment) {
+                if (parsed.session_id !== attachment.sessionId) {
+                    socket.close(1008, "Runner ACK session mismatch.");
+                    return;
+                }
+                this.broker.acknowledgeCommandFromRunner(attachment.sessionId, attachment.runnerInstanceId, parsed.command_id, parsed.reply_to);
+                this.broker.recordRunnerActivity(attachment.sessionId, attachment.runnerInstanceId);
+                await this.persistState();
+            }
+            return;
+        }
         if (!isResultEnvelopeLike(parsed)) {
             socket.close(1003, "Unsupported runner message.");
             return;
+        }
+        if (attachment && parsed.session_id !== attachment.sessionId) {
+            socket.close(1008, "Runner result session mismatch.");
+            return;
+        }
+        const applied = attachment
+            ? this.broker.applyRunnerResult(parsed, {
+                runnerInstanceId: attachment.runnerInstanceId,
+                replyTo: parsed.reply_to,
+            })
+            : null;
+        if (attachment) {
+            this.broker.recordRunnerActivity(attachment.sessionId, attachment.runnerInstanceId);
+            await this.persistState();
         }
         const key = pendingResultKey(parsed.command_id, parsed.reply_to);
         const pending = this.pendingRunnerResults.get(key);
         if (pending) {
             clearTimeout(pending.timeout);
             this.pendingRunnerResults.delete(key);
-            pending.resolve(parsed);
-        }
-        if (attachment) {
-            this.broker.recordRunnerActivity(attachment.sessionId, attachment.runnerInstanceId);
-            await this.persistState();
+            if (applied || !attachment) {
+                pending.resolve(parsed);
+            }
+            else {
+                pending.reject(new RunnerResultUnavailableError("Runner returned a result envelope that does not match the command."));
+            }
         }
     }
     async webSocketClose(socket) {
@@ -277,13 +311,14 @@ export class ColabBridgeSessionDurableObject {
             return;
         }
     }
-    sendCommandToRunnerSocket(socket, envelope) {
+    async sendCommandToRunnerSocket(socket, envelope) {
+        await this.persistState();
         const timeoutMs = Math.max(1_000, Date.parse(envelope.deadline_at) - Date.now() + 1_000);
         return new Promise((resolve, reject) => {
             const key = pendingResultKey(envelope.command_id, envelope.message_id);
             const timeout = setTimeout(() => {
                 this.pendingRunnerResults.delete(key);
-                reject(new Error("Runner command timed out waiting for WebSocket result."));
+                reject(new RunnerResultUnavailableError("Runner did not return a result before the command deadline; command state is unknown."));
             }, timeoutMs);
             this.pendingRunnerResults.set(key, { socket, timeout, resolve, reject });
             try {
@@ -292,7 +327,9 @@ export class ColabBridgeSessionDurableObject {
             catch (error) {
                 clearTimeout(timeout);
                 this.pendingRunnerResults.delete(key);
-                reject(error);
+                reject(new RunnerResultUnavailableError(error instanceof Error
+                    ? error.message
+                    : "Runner WebSocket send failed before a result was received."));
             }
         });
     }
@@ -303,7 +340,7 @@ export class ColabBridgeSessionDurableObject {
             }
             clearTimeout(pending.timeout);
             this.pendingRunnerResults.delete(key);
-            pending.reject(new Error(error.message));
+            pending.reject(new RunnerResultUnavailableError(error.message));
         }
     }
 }
@@ -475,6 +512,18 @@ function isResultEnvelopeLike(value) {
         typeof record.ok === "boolean" &&
         "payload" in record);
 }
+function isAckEnvelopeLike(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+    }
+    const record = value;
+    return (record.kind === "ack" &&
+        typeof record.session_id === "string" &&
+        typeof record.command_id === "string" &&
+        typeof record.reply_to === "string" &&
+        typeof record.message_id === "string" &&
+        typeof record.type === "string");
+}
 function pendingResultKey(commandId, replyTo) {
     return `${commandId}:${replyTo}`;
 }
@@ -512,6 +561,7 @@ function statusForWorkerBrokerError(error) {
 class RowBackedBridgeRepository {
     sessions = new Map();
     commands = new Map();
+    jobs = new Map();
     audits = [];
     dirtyRows = new Map();
     deletedKeys = new Set();
@@ -536,6 +586,18 @@ class RowBackedBridgeRepository {
     updateCommand(command) {
         this.setCommand(command, true);
     }
+    upsertJob(job) {
+        this.setJob(job, true);
+    }
+    getJob(sessionId, jobId) {
+        const job = this.jobs.get(this.jobKey(sessionId, jobId));
+        return job ? structuredClone(job) : undefined;
+    }
+    listJobs(sessionId) {
+        return [...this.jobs.values()]
+            .filter((job) => job.sessionId === sessionId)
+            .map((job) => structuredClone(job));
+    }
     insertAudit(row) {
         const stored = {
             storageKey: auditRowStorageKey(row.sessionId, row.at, this.auditSequence++),
@@ -553,6 +615,7 @@ class RowBackedBridgeRepository {
     hydrateRows(input) {
         this.sessions.clear();
         this.commands.clear();
+        this.jobs.clear();
         this.audits = [];
         this.dirtyRows.clear();
         this.deletedKeys.clear();
@@ -562,6 +625,9 @@ class RowBackedBridgeRepository {
         }
         for (const command of input.commands) {
             this.setCommand(command, false);
+        }
+        for (const job of input.jobs ?? []) {
+            this.setJob(job, false);
         }
         for (const audit of input.audits) {
             this.audits.push({
@@ -574,6 +640,7 @@ class RowBackedBridgeRepository {
     hydrateLegacySnapshot(snapshot) {
         this.sessions.clear();
         this.commands.clear();
+        this.jobs.clear();
         this.audits = [];
         this.dirtyRows.clear();
         this.deletedKeys.clear();
@@ -583,6 +650,9 @@ class RowBackedBridgeRepository {
         }
         for (const command of snapshot.commands ?? []) {
             this.setCommand(command, true);
+        }
+        for (const job of snapshot.jobs ?? []) {
+            this.setJob(job, true);
         }
         for (const audit of snapshot.audits ?? []) {
             const stored = {
@@ -598,6 +668,7 @@ class RowBackedBridgeRepository {
         return {
             sessions: [...this.sessions.keys()].map((sessionId) => sessionRowStorageKey(sessionId)),
             commands: [...this.commands.values()].map((command) => commandRowStorageKey(command.sessionId, command.commandId)),
+            jobs: [...this.jobs.values()].map((job) => jobRowStorageKey(job.sessionId, job.jobId)),
             audits: this.audits.map((entry) => entry.storageKey),
         };
     }
@@ -619,9 +690,17 @@ class RowBackedBridgeRepository {
     }
     setCommand(command, dirty) {
         const row = structuredClone(command);
+        row.runnerMessageId ??= null;
         this.commands.set(this.commandKey(row.sessionId, row.commandId), row);
         if (dirty) {
             this.markDirty(commandRowStorageKey(row.sessionId, row.commandId), row);
+        }
+    }
+    setJob(job, dirty) {
+        const row = structuredClone(job);
+        this.jobs.set(this.jobKey(row.sessionId, row.jobId), row);
+        if (dirty) {
+            this.markDirty(jobRowStorageKey(row.sessionId, row.jobId), row);
         }
     }
     markDirty(storageKey, row) {
@@ -646,6 +725,9 @@ class RowBackedBridgeRepository {
     }
     commandKey(sessionId, commandId) {
         return `${sessionId}:${commandId}`;
+    }
+    jobKey(sessionId, jobId) {
+        return `${sessionId}:${jobId}`;
     }
 }
 class RowBackedNonceRepository {
@@ -714,8 +796,16 @@ class RowBackedNonceRepository {
             }
         }
         const remainingRows = rows.filter((row) => !deleteKeys.has(this.key(row.sessionId, row.side, row.nonce)));
-        for (const row of remainingRows.slice(0, Math.max(0, remainingRows.length - maxNoncesPerSessionSide))) {
-            deleteKeys.add(this.key(row.sessionId, row.side, row.nonce));
+        const capOverflow = Math.max(0, remainingRows.length - maxNoncesPerSessionSide);
+        if (capOverflow > 0 && Number.isFinite(referenceTime)) {
+            const cutoff = referenceTime - protectedNonceReplayWindowMs;
+            const oldEnoughRows = remainingRows.filter((row) => {
+                const seenAt = Date.parse(row.seenAt);
+                return Number.isFinite(seenAt) && seenAt < cutoff;
+            });
+            for (const row of oldEnoughRows.slice(0, capOverflow)) {
+                deleteKeys.add(this.key(row.sessionId, row.side, row.nonce));
+            }
         }
         for (const key of deleteKeys) {
             const row = this.rows.get(key);
@@ -735,6 +825,7 @@ class RowBackedNonceRepository {
 function hasIndexedRows(index) {
     return (index.sessions.length > 0 ||
         index.commands.length > 0 ||
+        (index.jobs?.length ?? 0) > 0 ||
         index.audits.length > 0 ||
         index.nonces.length > 0);
 }
@@ -743,6 +834,9 @@ function sessionRowStorageKey(sessionId) {
 }
 function commandRowStorageKey(sessionId, commandId) {
     return `${rowStoragePrefix}:command:${encodeStorageKeyPart(sessionId)}:${encodeStorageKeyPart(commandId)}`;
+}
+function jobRowStorageKey(sessionId, jobId) {
+    return `${rowStoragePrefix}:job:${encodeStorageKeyPart(sessionId)}:${encodeStorageKeyPart(jobId)}`;
 }
 function auditRowStorageKey(sessionId, at, sequence) {
     return `${rowStoragePrefix}:audit:${encodeStorageKeyPart(sessionId)}:${encodeStorageKeyPart(at)}:${sequence}`;

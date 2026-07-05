@@ -60,7 +60,10 @@ function requireRunnerCommandMessage(value: RunnerCommandMessage | null): Runner
 }
 
 async function fetchWorker(env: BridgeWorkerEnv, request: Request): Promise<Response> {
-  return worker.fetch(request, env);
+  if (env.COLAB_BRIDGE_SESSIONS || !env.ADMIN_SECRET) {
+    return worker.fetch(request, env);
+  }
+  return createWorkerFetchHandler(env, { broker: getWorkerBrokerForTest(env) })(request);
 }
 
 async function readEnvelope<TData>(response: Response): Promise<Envelope<TData>> {
@@ -263,6 +266,22 @@ test("Worker fails closed when ADMIN_SECRET is missing", async () => {
   assert.match(envelope.error?.message ?? "", /ADMIN_SECRET/);
 });
 
+test("Worker fails closed without Durable Object binding outside injected tests", async () => {
+  const response = await worker.fetch(
+    new Request(`${baseUrl}/v1/sessions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminSecret}` },
+    }),
+    { ADMIN_SECRET: adminSecret },
+  );
+  const envelope = await readEnvelope(response);
+
+  assert.equal(response.status, 500);
+  assert.equal(envelope.ok, false);
+  assert.equal(envelope.error?.code, "INTERNAL_ERROR");
+  assert.match(envelope.error?.message ?? "", /COLAB_BRIDGE_SESSIONS/);
+});
+
 test("Worker POST /v1/sessions requires admin bearer secret", async () => {
   const env = { ADMIN_SECRET: adminSecret };
 
@@ -427,6 +446,42 @@ test("Worker Durable Object binding persists nonce replay state", async () => {
     }),
   );
   const replayEnvelope = await readEnvelope(replay);
+  assert.equal(replay.status, 401);
+  assert.equal(replayEnvelope.error?.code, "REPLAY_DETECTED");
+});
+
+test("Worker nonce compaction keeps entries still inside auth skew", async () => {
+  const namespace = new MemoryDurableObjectNamespace(adminSecret);
+  const env = { ADMIN_SECRET: adminSecret, COLAB_BRIDGE_SESSIONS: namespace };
+  const session = await createSession(env);
+
+  const firstNonce = "protected_nonce_0";
+  const first = await fetchWorker(
+    env,
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/status`, {
+      headers: controllerHeaders(session.controller_token, firstNonce),
+    }),
+  );
+  assert.equal(first.status, 200);
+
+  for (let index = 1; index <= 1005; index += 1) {
+    const response = await fetchWorker(
+      env,
+      new Request(`${baseUrl}/v1/sessions/${session.session_id}/status`, {
+        headers: controllerHeaders(session.controller_token, `protected_nonce_${index}`),
+      }),
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const replay = await fetchWorker(
+    env,
+    new Request(`${baseUrl}/v1/sessions/${session.session_id}/status`, {
+      headers: controllerHeaders(session.controller_token, firstNonce),
+    }),
+  );
+  const replayEnvelope = await readEnvelope(replay);
+
   assert.equal(replay.status, 401);
   assert.equal(replayEnvelope.error?.code, "REPLAY_DETECTED");
 });

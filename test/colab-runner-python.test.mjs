@@ -273,6 +273,8 @@ class FakeWebSocket:
     async def __anext__(self):
         if commands:
             return json.dumps(commands.pop(0))
+        while len(sent) < 2:
+            await asyncio.sleep(0.01)
         raise StopAsyncIteration
 
     async def send(self, message):
@@ -310,6 +312,249 @@ asyncio.run(main())
     assert.equal(output[0].reply_to, "msg_python_ack");
     assert.equal(output[1].kind, "result");
     assert.deepEqual(output[1].payload, { ok: true, pong: true });
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("Colab runner keeps ping responsive while a foreground command is running", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "colab-runner-python-concurrent-"));
+  try {
+    const probe = `
+import asyncio
+import importlib.util
+import json
+import os
+import sys
+import time
+import types
+
+runner_path = sys.argv[1]
+project_root = sys.argv[2]
+os.environ["COLAB_BRIDGE_PROJECT_ROOT"] = project_root
+spec = importlib.util.spec_from_file_location("colab_runner", runner_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules["colab_runner"] = module
+spec.loader.exec_module(module)
+
+sent = []
+commands = [
+    {
+        "protocol_version": 1,
+        "session_id": "sess_python_concurrent",
+        "command_id": "cmd_slow",
+        "message_id": "msg_slow",
+        "kind": "command",
+        "type": "run_python",
+        "sent_at": "2026-06-29T00:00:00Z",
+        "deadline_at": "2026-06-29T00:00:30Z",
+        "payload": {"code": "import time; time.sleep(2); print('slow')", "timeout_sec": 5, "max_output_bytes": 1024},
+    },
+    {
+        "protocol_version": 1,
+        "session_id": "sess_python_concurrent",
+        "command_id": "cmd_ping",
+        "message_id": "msg_ping",
+        "kind": "command",
+        "type": "ping",
+        "sent_at": "2026-06-29T00:00:00Z",
+        "deadline_at": "2026-06-29T00:00:30Z",
+        "payload": {},
+    },
+]
+
+class FakeWebSocket:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if commands:
+            return json.dumps(commands.pop(0))
+        await asyncio.sleep(0.4)
+        raise StopAsyncIteration
+
+    async def send(self, message):
+        parsed = json.loads(message)
+        parsed["observed_at"] = time.monotonic()
+        sent.append(parsed)
+
+def connect(*args, **kwargs):
+    return FakeWebSocket()
+
+sys.modules["websockets"] = types.SimpleNamespace(connect=connect)
+
+async def main():
+    started = time.monotonic()
+    await module.connect_once(
+        bridge_url="https://bridge.test",
+        session_id="sess_python_concurrent",
+        runner_token="runner_secret",
+        runner_id="runner_python_concurrent",
+        kernel_started_at="2026-06-29T00:00:00Z",
+        runner_started_at="2026-06-29T00:00:00Z",
+    )
+    print(json.dumps({"elapsed": time.monotonic() - started, "sent": sent}))
+
+asyncio.run(main())
+`;
+    const result = spawnSync("python3", ["-", resolve("python/colab_runner.py"), projectRoot], {
+      cwd: resolve("."),
+      input: probe,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim());
+    const pingResult = output.sent.find(
+      (message) => message.kind === "result" && message.command_id === "cmd_ping",
+    );
+
+    assert.ok(pingResult, JSON.stringify(output.sent));
+    assert.deepEqual(pingResult.payload, { ok: true, pong: true });
+    assert.ok(output.elapsed < 1.5, `foreground command blocked the loop for ${output.elapsed}s`);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("Colab runner closes malformed WebSocket commands without crashing", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "colab-runner-python-malformed-"));
+  try {
+    const probe = `
+import asyncio
+import importlib.util
+import json
+import os
+import sys
+import types
+
+runner_path = sys.argv[1]
+project_root = sys.argv[2]
+os.environ["COLAB_BRIDGE_PROJECT_ROOT"] = project_root
+spec = importlib.util.spec_from_file_location("colab_runner", runner_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules["colab_runner"] = module
+spec.loader.exec_module(module)
+
+sent = []
+closed = []
+commands = [{"kind": "command", "type": "ping"}]
+
+class FakeWebSocket:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if commands:
+            return json.dumps(commands.pop(0))
+        raise StopAsyncIteration
+
+    async def send(self, message):
+        sent.append(json.loads(message))
+
+    def close(self, code=None, reason=None):
+        closed.append({"code": code, "reason": reason})
+
+def connect(*args, **kwargs):
+    return FakeWebSocket()
+
+sys.modules["websockets"] = types.SimpleNamespace(connect=connect)
+
+async def main():
+    await module.connect_once(
+        bridge_url="https://bridge.test",
+        session_id="sess_python_malformed",
+        runner_token="runner_secret",
+        runner_id="runner_python_malformed",
+        kernel_started_at="2026-06-29T00:00:00Z",
+        runner_started_at="2026-06-29T00:00:00Z",
+    )
+    print(json.dumps({"sent": sent, "closed": closed}))
+
+asyncio.run(main())
+`;
+    const result = spawnSync("python3", ["-", resolve("python/colab_runner.py"), projectRoot], {
+      cwd: resolve("."),
+      input: probe,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim());
+    assert.deepEqual(output.sent, []);
+    assert.equal(output.closed[0].code, 1003);
+    assert.match(output.closed[0].reason, /session_id/);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("Colab runner bounds foreground stream collection when detached descendants hold pipes", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "colab-runner-python-detached-pipes-"));
+  try {
+    const probe = `
+import asyncio
+import importlib.util
+import json
+import os
+import shlex
+import sys
+import time
+from dataclasses import asdict
+
+runner_path = sys.argv[1]
+project_root = sys.argv[2]
+os.environ["COLAB_BRIDGE_PROJECT_ROOT"] = project_root
+spec = importlib.util.spec_from_file_location("colab_runner", runner_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules["colab_runner"] = module
+spec.loader.exec_module(module)
+
+async def main():
+    parent = (
+        "import os, sys, time; "
+        "pid = os.fork(); "
+        "\\nif pid == 0:\\n    os.setsid(); time.sleep(3); os._exit(0)\\n"
+        "print('parent-exit')"
+    )
+    command = shlex.quote(sys.executable) + " -c " + shlex.quote(parent)
+    started = time.monotonic()
+    result = await module.run_shell({
+        "command": command,
+        "timeout_sec": 5,
+        "max_output_bytes": 1024,
+    })
+    print(json.dumps({"elapsed": time.monotonic() - started, "result": asdict(result)}))
+
+asyncio.run(main())
+`;
+    const result = spawnSync("python3", ["-", resolve("python/colab_runner.py"), projectRoot], {
+      cwd: resolve("."),
+      input: probe,
+      encoding: "utf8",
+      timeout: 2500,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim());
+    assert.ok(output.elapsed < 1.5, `stream collection took ${output.elapsed}s`);
+    assert.equal(output.result.timed_out, false);
+    assert.match(output.result.stdout, /parent-exit/);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }

@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   createReconnectRunnerCommand,
   dryRunLines,
@@ -123,6 +123,74 @@ test("runner reconnect fails when Colab reports a traceback despite zero CLI exi
   }
 });
 
+test("runner reconnect helper refuses to stop an unrelated pid-file process", async () => {
+  const tempDir = await mkdtemp(resolve(tmpdir(), "colab-reconnect-pid-test-"));
+  try {
+    const projectRoot = join(tempDir, "project");
+    const procRoot = join(tempDir, "proc");
+    const processRoot = join(procRoot, "4242");
+    await mkdir(projectRoot, { recursive: true });
+    await mkdir(processRoot, { recursive: true });
+    await writeFile(join(projectRoot, ".colab_mcp_runner.pid"), "4242", "utf8");
+    await writeFile(
+      join(processRoot, "environ"),
+      [
+        "COLAB_BRIDGE_URL=https://bridge.test",
+        "COLAB_BRIDGE_SESSION_ID=sess_reconnect",
+        "COLAB_BRIDGE_RUNNER_TOKEN=secret",
+        `COLAB_BRIDGE_PROJECT_ROOT=${projectRoot}`,
+        "",
+      ].join("\0"),
+      "utf8",
+    );
+    await writeFile(join(processRoot, "cmdline"), "/usr/bin/python3\0/tmp/not-the-runner.py\0", "utf8");
+    await writeFile(
+      join(processRoot, "stat"),
+      `4242 (python3) S ${Array.from({ length: 24 }, (_, index) => index + 1).join(" ")}`,
+      "utf8",
+    );
+
+    const probe = `
+import importlib.util
+import json
+import os
+import sys
+
+os.environ["COLAB_BRIDGE_PROJECT_ROOT"] = sys.argv[2]
+os.environ["COLAB_BRIDGE_PROC_ROOT"] = sys.argv[3]
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules["helper"] = module
+spec.loader.exec_module(module)
+
+killpg_calls = []
+module.os.killpg = lambda pid, sig: killpg_calls.append({"pid": pid, "sig": sig})
+
+errors = []
+for name in ("read_runner_env", "stop_existing_runner"):
+    try:
+        getattr(module, name)()
+    except RuntimeError as error:
+        errors.append(str(error))
+
+print(json.dumps({"errors": errors, "killpg_calls": killpg_calls}))
+`;
+    const result = spawnSyncPython(
+      ["-", resolve("scripts", "colab-reconnect-runner.py"), projectRoot, procRoot],
+      probe,
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.killpg_calls.length, 0);
+    assert.match(output.errors[0], /does not point to the expected/);
+    assert.match(output.errors[1], /Refusing to stop process/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 function runNodeScript(args, env = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(process.execPath, args, {
@@ -143,5 +211,13 @@ function runNodeScript(args, env = {}) {
     child.on("close", (code) => {
       resolvePromise({ code: code ?? 1, stdout, stderr });
     });
+  });
+}
+
+function spawnSyncPython(args, input) {
+  return spawnSync("python3", args, {
+    cwd: process.cwd(),
+    input,
+    encoding: "utf8",
   });
 }

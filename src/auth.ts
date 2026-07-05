@@ -3,6 +3,7 @@ import { bridgeError, type BridgeError } from "./protocol.js";
 
 const TOKEN_HASH_NAMESPACE = "agent-colab-bridge";
 const LEGACY_TOKEN_HASH_NAMESPACES = ["codex-colab-bridge", "colab-mcp-bridge"];
+export const DEFAULT_AUTH_SKEW_MS = 5 * 60 * 1000;
 
 export interface AuthAttempt {
   token: string;
@@ -79,7 +80,7 @@ export function validateTimestamp(
   }
 
   const now = options.now?.getTime() ?? Date.now();
-  const skewMs = options.skewMs ?? 5 * 60 * 1000;
+  const skewMs = options.skewMs ?? DEFAULT_AUTH_SKEW_MS;
   if (Math.abs(now - parsed) > skewMs) {
     throw new AuthFailure(bridgeError("UNAUTHORIZED", "Auth timestamp is outside the allowed skew."));
   }

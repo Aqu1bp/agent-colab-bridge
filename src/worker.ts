@@ -1,4 +1,4 @@
-import { type AuthAttempt, type NonceRepository } from "./auth.js";
+import { DEFAULT_AUTH_SKEW_MS, type AuthAttempt, type NonceRepository } from "./auth.js";
 import {
   type AuditRow,
   type BridgeRepository,
@@ -117,6 +117,7 @@ const rowStorageIndexKey = `${rowStoragePrefix}:index`;
 const maxAuditRowsPerSession = 200;
 const maxNoncesPerSessionSide = 1_000;
 const nonceRetentionMs = 10 * 60 * 1000;
+const protectedNonceReplayWindowMs = DEFAULT_AUTH_SKEW_MS;
 const internalSessionIdHeader = "x-colab-bridge-session-id";
 const fallbackBrokers = new WeakMap<object, SessionBroker>();
 const fallbackBrokerKey = {};
@@ -159,7 +160,18 @@ export function createWorkerFetchHandler(
       );
     }
 
-    if (!options.broker && env.COLAB_BRIDGE_SESSIONS) {
+    if (!options.broker) {
+      if (!env.COLAB_BRIDGE_SESSIONS) {
+        return workerJsonError(
+          500,
+          bridgeError(
+            "INTERNAL_ERROR",
+            "Worker COLAB_BRIDGE_SESSIONS Durable Object binding is not configured.",
+            false,
+          ),
+        );
+      }
+
       const routed = routeDurableObjectRequest(request, env.COLAB_BRIDGE_SESSIONS);
       if (routed) {
         return routed;
@@ -1110,8 +1122,16 @@ class RowBackedNonceRepository implements NonceRepository {
     }
 
     const remainingRows = rows.filter((row) => !deleteKeys.has(this.key(row.sessionId, row.side, row.nonce)));
-    for (const row of remainingRows.slice(0, Math.max(0, remainingRows.length - maxNoncesPerSessionSide))) {
-      deleteKeys.add(this.key(row.sessionId, row.side, row.nonce));
+    const capOverflow = Math.max(0, remainingRows.length - maxNoncesPerSessionSide);
+    if (capOverflow > 0 && Number.isFinite(referenceTime)) {
+      const cutoff = referenceTime - protectedNonceReplayWindowMs;
+      const oldEnoughRows = remainingRows.filter((row) => {
+        const seenAt = Date.parse(row.seenAt);
+        return Number.isFinite(seenAt) && seenAt < cutoff;
+      });
+      for (const row of oldEnoughRows.slice(0, capOverflow)) {
+        deleteKeys.add(this.key(row.sessionId, row.side, row.nonce));
+      }
     }
 
     for (const key of deleteKeys) {

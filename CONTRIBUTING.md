@@ -10,7 +10,12 @@ Use Node.js 20 or newer.
 npm ci
 npm run build
 npm test
+npm run package:plugin
 ```
+
+The committed `plugins/agent-colab-bridge` directory is generated from source.
+Do not edit it by hand; `npm test` runs the plugin packaging drift guard and
+fails if `npm run package:plugin` would change the current generated payload.
 
 Before opening a pull request, also run:
 

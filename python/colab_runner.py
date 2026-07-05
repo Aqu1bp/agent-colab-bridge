@@ -46,6 +46,7 @@ DEFAULT_TAIL_MAX_BYTES = 20 * 1024
 MAX_TAIL_BYTES = 200 * 1024
 DEFAULT_INTERRUPT_KILL_AFTER_SEC = 5
 MAX_INTERRUPT_KILL_AFTER_SEC = 30
+FINAL_STREAM_DRAIN_TIMEOUT_SEC = 0.25
 
 
 @dataclass(frozen=True)
@@ -1014,6 +1015,7 @@ async def collect_process(
     remaining = max_output_bytes
     truncated = False
     timed_out = False
+    exit_code: int | None = None
 
     async def read_stream(stream: asyncio.StreamReader | None, parts: list[bytes]) -> None:
         nonlocal remaining, truncated
@@ -1036,18 +1038,41 @@ async def collect_process(
     stderr_task = asyncio.create_task(read_stream(process.stderr, stderr_parts))
 
     try:
-        await asyncio.wait_for(process.wait(), timeout=timeout_sec)
+        exit_code = await wait_for_direct_process_exit(process, timeout_sec)
     except asyncio.TimeoutError:
         timed_out = True
+        terminate_process_group(process)
+        try:
+            await wait_for_direct_process_exit(process, 1)
+        except asyncio.TimeoutError:
+            kill_process_group(process)
+            try:
+                await wait_for_direct_process_exit(process, 1)
+            except asyncio.TimeoutError:
+                pass
+    except asyncio.CancelledError:
         kill_process_group(process)
-        await process.wait()
+        try:
+            await wait_for_direct_process_exit(process, 1)
+        except asyncio.TimeoutError:
+            pass
+        raise
     finally:
-        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                timeout=FINAL_STREAM_DRAIN_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            close_process_pipe_transports(process)
+            for task in (stdout_task, stderr_task):
+                task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
     return ForegroundResult(
         stdout=b"".join(stdout_parts).decode("utf-8", errors="replace"),
         stderr=b"".join(stderr_parts).decode("utf-8", errors="replace"),
-        exit_code=None if timed_out else process.returncode,
+        exit_code=None if timed_out else exit_code,
         duration_ms=max(0, round((time.monotonic() - started_at) * 1000)),
         timed_out=timed_out,
         truncated=truncated,
@@ -1056,6 +1081,42 @@ async def collect_process(
 
 def kill_process_group(process: asyncio.subprocess.Process) -> None:
     send_process_group_signal(process, signal.SIGKILL)
+
+
+def terminate_process_group(process: asyncio.subprocess.Process) -> None:
+    send_process_group_signal(process, signal.SIGTERM)
+
+
+async def wait_for_direct_process_exit(
+    process: asyncio.subprocess.Process,
+    timeout_sec: float,
+) -> int | None:
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        if process.returncode is not None:
+            return process.returncode
+        if process.pid is not None:
+            try:
+                waited_pid, status = os.waitpid(process.pid, os.WNOHANG)
+            except ChildProcessError:
+                return process.returncode
+            if waited_pid == process.pid:
+                close_process_pipe_transports(process)
+                return os.waitstatus_to_exitcode(status)
+        if time.monotonic() >= deadline:
+            raise asyncio.TimeoutError()
+        await asyncio.sleep(0.01)
+
+
+def close_process_pipe_transports(process: asyncio.subprocess.Process) -> None:
+    transport = getattr(process, "_transport", None)
+    get_pipe_transport = getattr(transport, "get_pipe_transport", None)
+    if get_pipe_transport is None:
+        return
+    for fd in (1, 2):
+        pipe_transport = get_pipe_transport(fd)
+        if pipe_transport is not None:
+            pipe_transport.close()
 
 
 def send_process_group_signal(process: asyncio.subprocess.Process, target_signal: int) -> None:
@@ -1107,6 +1168,52 @@ def ack_envelope(command: dict[str, Any]) -> dict[str, Any]:
         "type": f"{command['type']}_ack",
         "sent_at": now_iso(),
     }
+
+
+def validate_command_envelope(value: Any) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(value, dict):
+        return None, "Runner command envelope must be an object."
+    for key in ("session_id", "command_id", "message_id", "type"):
+        if not isinstance(value.get(key), str) or value.get(key) == "":
+            return None, f"Runner command envelope is missing {key}."
+    if value.get("kind") != "command":
+        return None, "Runner command envelope kind must be command."
+    payload = value.get("payload", {})
+    if payload is not None and not isinstance(payload, dict):
+        return None, "Runner command payload must be an object."
+    if "payload" not in value:
+        value = {**value, "payload": {}}
+    return value, None
+
+
+def requires_serial_command_execution(command_type: str) -> bool:
+    return command_type in {"run_shell", "run_python", "write_file", "start_job", "interrupt_job"}
+
+
+async def send_json(websocket: Any, send_lock: asyncio.Lock, envelope: dict[str, Any]) -> None:
+    async with send_lock:
+        await websocket.send(json.dumps(envelope))
+
+
+async def close_websocket(websocket: Any, code: int, reason: str) -> None:
+    result = websocket.close(code, reason)
+    if hasattr(result, "__await__"):
+        await result
+
+
+async def execute_and_send_command_result(
+    websocket: Any,
+    envelope: dict[str, Any],
+    *,
+    serial_lock: asyncio.Lock,
+    send_lock: asyncio.Lock,
+) -> None:
+    if requires_serial_command_execution(envelope["type"]):
+        async with serial_lock:
+            response = await handle_command(envelope)
+    else:
+        response = await handle_command(envelope)
+    await send_json(websocket, send_lock, response)
 
 
 async def connect_and_run(
@@ -1184,15 +1291,40 @@ async def connect_once(
 
     async with websocket_context as websocket:
         heartbeat_task = asyncio.create_task(send_heartbeats(websocket, session_id, runner_id))
+        command_tasks: set[asyncio.Task[None]] = set()
+        serial_lock = asyncio.Lock()
+        send_lock = asyncio.Lock()
         try:
             async for message in websocket:
-                envelope = json.loads(message)
-                await websocket.send(json.dumps(ack_envelope(envelope)))
-                response = await handle_command(envelope)
-                await websocket.send(json.dumps(response))
+                try:
+                    parsed = json.loads(message)
+                except json.JSONDecodeError:
+                    await close_websocket(websocket, 1003, "Runner command must be JSON.")
+                    continue
+                envelope, validation_error = validate_command_envelope(parsed)
+                if envelope is None:
+                    await close_websocket(
+                        websocket,
+                        1003,
+                        validation_error or "Malformed runner command envelope.",
+                    )
+                    continue
+                await send_json(websocket, send_lock, ack_envelope(envelope))
+                task = asyncio.create_task(
+                    execute_and_send_command_result(
+                        websocket,
+                        envelope,
+                        serial_lock=serial_lock,
+                        send_lock=send_lock,
+                    )
+                )
+                command_tasks.add(task)
+                task.add_done_callback(command_tasks.discard)
         finally:
             heartbeat_task.cancel()
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
+            for task in command_tasks:
+                task.cancel()
+            await asyncio.gather(heartbeat_task, *command_tasks, return_exceptions=True)
 
 
 def runner_websocket_url(bridge_url: str, session_id: str) -> str:

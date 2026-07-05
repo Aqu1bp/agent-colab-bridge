@@ -188,13 +188,22 @@ export class BrokerError extends Error {
 
 export class RunnerResultUnavailableError extends Error {}
 
+type AuthFailureThrottleKey = `${string}:${"controller" | "runner"}`;
+
 export class SessionBroker {
   private readonly runners = new Map<string, RunnerHandler>();
+  private readonly authFailureBuckets = new Map<AuthFailureThrottleKey, number[]>();
 
   constructor(
     private readonly repository: BridgeRepository = new InMemoryBridgeRepository(),
     private readonly nonceRepository: NonceRepository = new InMemoryNonceRepository(),
-    private readonly options: { sessionTtlMs?: number; authSkewMs?: number; runnerStaleMs?: number } = {},
+    private readonly options: {
+      sessionTtlMs?: number;
+      authSkewMs?: number;
+      runnerStaleMs?: number;
+      authFailureWindowMs?: number;
+      authFailureLimit?: number;
+    } = {},
   ) {}
 
   createSession(now = new Date(), sessionId = newId("sess")): CreateSessionResult {
@@ -344,6 +353,7 @@ export class SessionBroker {
   preflightRunnerAuth(sessionId: string, auth: AuthAttempt, now = new Date()): void {
     const session = this.requireLiveSession(sessionId, now);
     try {
+      this.assertAuthNotThrottled(sessionId, "runner", now);
       validateTimestamp(auth.timestamp, {
         now,
         skewMs: this.options.authSkewMs,
@@ -358,6 +368,7 @@ export class SessionBroker {
         throw new AuthFailure(bridgeError("REPLAY_DETECTED", "Nonce has already been used."));
       }
     } catch (error) {
+      this.recordAuthFailure(sessionId, "runner", now, error);
       this.auditAuthFailure(sessionId, "runner", now, error);
       throw this.toBrokerError(error);
     }
@@ -741,6 +752,7 @@ export class SessionBroker {
   private requireController(sessionId: string, auth: AuthAttempt, now: Date): SessionRow {
     const session = this.requireLiveSession(sessionId, now);
     try {
+      this.assertAuthNotThrottled(sessionId, "controller", now);
       validateAuthenticatedRequest({
         sessionId,
         side: "controller",
@@ -750,8 +762,10 @@ export class SessionBroker {
         now,
         skewMs: this.options.authSkewMs,
       });
+      this.clearAuthFailures(sessionId, "controller");
       return session;
     } catch (error) {
+      this.recordAuthFailure(sessionId, "controller", now, error);
       this.auditAuthFailure(sessionId, "controller", now, error);
       throw this.toBrokerError(error);
     }
@@ -760,6 +774,7 @@ export class SessionBroker {
   private requireRunner(sessionId: string, auth: AuthAttempt, now: Date): SessionRow {
     const session = this.requireLiveSession(sessionId, now);
     try {
+      this.assertAuthNotThrottled(sessionId, "runner", now);
       validateAuthenticatedRequest({
         sessionId,
         side: "runner",
@@ -769,11 +784,70 @@ export class SessionBroker {
         now,
         skewMs: this.options.authSkewMs,
       });
+      this.clearAuthFailures(sessionId, "runner");
       return session;
     } catch (error) {
+      this.recordAuthFailure(sessionId, "runner", now, error);
       this.auditAuthFailure(sessionId, "runner", now, error);
       throw this.toBrokerError(error);
     }
+  }
+
+  private assertAuthNotThrottled(
+    sessionId: string,
+    side: "controller" | "runner",
+    now: Date,
+  ): void {
+    const key = this.authFailureKey(sessionId, side);
+    const failures = this.pruneAuthFailures(key, now);
+    if (failures.length >= this.authFailureLimit()) {
+      throw new AuthFailure(bridgeError("RATE_LIMITED", "Too many failed authentication attempts.", true));
+    }
+  }
+
+  private recordAuthFailure(
+    sessionId: string,
+    side: "controller" | "runner",
+    now: Date,
+    error: unknown,
+  ): void {
+    if (error instanceof AuthFailure && error.bridgeError.code === "RATE_LIMITED") {
+      return;
+    }
+    const key = this.authFailureKey(sessionId, side);
+    const failures = this.pruneAuthFailures(key, now);
+    failures.push(now.getTime());
+    this.authFailureBuckets.set(key, failures);
+  }
+
+  private clearAuthFailures(sessionId: string, side: "controller" | "runner"): void {
+    this.authFailureBuckets.delete(this.authFailureKey(sessionId, side));
+  }
+
+  private pruneAuthFailures(key: AuthFailureThrottleKey, now: Date): number[] {
+    const cutoff = now.getTime() - this.authFailureWindowMs();
+    const failures = (this.authFailureBuckets.get(key) ?? []).filter((at) => at >= cutoff);
+    if (failures.length > 0) {
+      this.authFailureBuckets.set(key, failures);
+    } else {
+      this.authFailureBuckets.delete(key);
+    }
+    return failures;
+  }
+
+  private authFailureKey(
+    sessionId: string,
+    side: "controller" | "runner",
+  ): AuthFailureThrottleKey {
+    return `${sessionId}:${side}`;
+  }
+
+  private authFailureWindowMs(): number {
+    return this.options.authFailureWindowMs ?? 60_000;
+  }
+
+  private authFailureLimit(): number {
+    return this.options.authFailureLimit ?? 20;
   }
 
   private requireLiveSession(sessionId: string, now: Date): SessionRow {

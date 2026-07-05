@@ -31,10 +31,11 @@
     "setup:all": "node scripts/setup-all.mjs",
     "setup:bridge": "node scripts/setup-bridge.mjs",
     "package:plugin": "npm run build && node scripts/package-codex-plugin.mjs",
+    "check:plugin": "node scripts/check-plugin-drift.mjs",
     "prepack": "npm run package:plugin",
     "doctor": "node scripts/doctor.mjs",
     "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs",
-    "test": "npm run build && node --test dist/test/*.test.js test/*.test.mjs"
+    "test": "npm run build && node --test dist/test/*.test.js test/*.test.mjs && npm run check:plugin"
   },
   "bin": {
     "agent-colab-bridge": "bin/agent-colab-bridge.mjs"

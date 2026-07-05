@@ -98,6 +98,18 @@ export function createResultEnvelope(input) {
         ...(input.error ? { error: input.error } : {}),
     };
 }
+export function createAckEnvelope(input) {
+    return {
+        protocol_version: PROTOCOL_VERSION,
+        session_id: input.command.session_id,
+        command_id: input.command.command_id,
+        message_id: newId("msg"),
+        reply_to: input.command.message_id,
+        kind: "ack",
+        type: `${input.command.type}_ack`,
+        sent_at: input.sentAt ?? nowIso(),
+    };
+}
 export function isFinalCommandState(state) {
     return [
         "succeeded",
