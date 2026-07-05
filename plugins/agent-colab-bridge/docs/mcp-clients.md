@@ -1,7 +1,7 @@
 # MCP Client Setup
 
-`agent-colab-bridge` can run as a generic local stdio MCP server from the npm
-package:
+After npm publication, `agent-colab-bridge` can run as a generic local stdio MCP
+server from the npm package:
 
 ```bash
 npx -y agent-colab-bridge mcp
@@ -9,6 +9,10 @@ npx -y agent-colab-bridge mcp
 
 The server writes MCP JSON-RPC messages to stdout. Startup diagnostics and
 errors are written to stderr.
+
+Before npm publication, install the Codex plugin from a local checkout or Git
+source, or run source-checkout commands after `npm install`. Do not assume the
+`npx` command is available until the package has been published.
 
 ## Claude Code
 

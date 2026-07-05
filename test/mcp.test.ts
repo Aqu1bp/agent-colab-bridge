@@ -69,6 +69,15 @@ test("tool metadata declares annotations and output schemas", () => {
   assert.equal(toolByName("colab_reconnect_runner")?.annotations.destructiveHint, false);
   assert.equal(toolByName("colab_setup_bridge")?.enabledByDefault, true);
   assert.equal(toolByName("colab_setup_bridge")?.annotations.readOnlyHint, false);
+  assert.equal(
+    (
+      toolByName("colab_setup_bridge")?.inputSchema.properties as Record<
+        string,
+        { default?: unknown }
+      >
+    ).gpu?.default,
+    undefined,
+  );
   assert.equal(toolByName("colab_runtime_options")?.enabledByDefault, true);
   assert.equal(toolByName("colab_runtime_options")?.annotations.readOnlyHint, true);
   assert.equal(toolByName("colab_stop_runtime")?.enabledByDefault, true);

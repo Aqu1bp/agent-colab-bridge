@@ -4,7 +4,8 @@ Thanks for helping improve `agent-colab-bridge`.
 
 ## Development
 
-Use Node.js 20 or newer.
+Use Node.js 20 or newer and Python 3. CI pins Python 3.12 for the local runner
+tests, so use Python 3.12 when you want the closest local match.
 
 ```bash
 npm ci
@@ -21,7 +22,7 @@ Before opening a pull request, also run:
 
 ```bash
 npm audit --audit-level=low
-npm pack --dry-run
+npm run check:package
 ```
 
 Do not commit real Worker URLs, Cloudflare account identifiers, bridge session IDs,

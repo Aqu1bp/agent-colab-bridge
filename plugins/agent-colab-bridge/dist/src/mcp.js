@@ -240,7 +240,7 @@ export const toolDefinitions = [
                 enable_dangerous_tools: { type: "boolean", default: false },
                 bootstrap: { type: "boolean", default: true },
                 smoke: { type: "boolean", default: true },
-                gpu: { type: "string", default: "T4" },
+                gpu: { type: "string" },
                 colab_session: { type: "string", default: "agent-colab-bridge" },
                 project_root: { type: "string", default: "/content/project" },
                 colab_config: { type: "string" },

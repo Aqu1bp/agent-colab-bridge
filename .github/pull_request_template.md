@@ -7,7 +7,7 @@
 - [ ] `npm run build`
 - [ ] `npm test`
 - [ ] `npm audit --audit-level=low`
-- [ ] `npm pack --dry-run`
+- [ ] `npm run check:package`
 
 ## Security Checklist
 

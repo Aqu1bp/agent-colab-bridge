@@ -20,6 +20,7 @@ use `google-colab-cli` for bootstrap.
 Prerequisites:
 
 - Node.js 20 or newer
+- Python 3.12 or another supported Python 3 runtime for local runner tests
 - A Cloudflare account authenticated with Wrangler. `npm install` installs the
   project-pinned Wrangler CLI used by setup.
 - `uvx` for running `google-colab-cli` on macOS or Linux
@@ -83,7 +84,7 @@ colab_setup_bridge({
 
 `colab_setup_bridge` checks local prerequisites, writes Cloudflare Worker
 secrets, deploys the Worker, creates a bridge session, writes
-`~/.config/agent-colab-bridge/config.json`, bootstraps a Colab T4 session named
+`~/.config/agent-colab-bridge/config.json`, bootstraps a Colab session named
 `agent-colab-bridge`, and runs the MCP smoke test when `smoke` is true. It
 generates an admin secret when one is not provided and never prints admin,
 controller, or runner token values.
@@ -162,12 +163,16 @@ cp config.example.json config.local.json
 
 ## Generic Local Stdio MCP
 
-The npm package can be used directly by MCP clients that support local stdio
-servers:
+After this package is published to npm, MCP clients that support local stdio
+servers can run it directly:
 
 ```bash
 npx -y agent-colab-bridge mcp
 ```
+
+Before npm publication, use the Codex plugin from a local checkout or the Git
+repository source described above. Source-checkout developers can also run local
+commands with `npm run ...` after `npm install`.
 
 stdout is reserved for MCP JSON-RPC messages. Startup diagnostics and errors go
 to stderr. See [docs/mcp-clients.md](docs/mcp-clients.md) for Claude Code,
@@ -448,8 +453,9 @@ The bootstrap script shells out to:
 uvx --from google-colab-cli colab ...
 ```
 
-It checks for a named Colab session, creates one if needed, requests a T4 GPU by
-default, installs `websockets`, creates `/content/project`, uploads
+It checks for a named Colab session, creates one if needed, requests a GPU only
+when `--gpu`, config, or environment settings provide one, installs `websockets`,
+creates `/content/project`, uploads
 `python/colab_runner.py`, uploads a temporary runner config file, and starts the
 runner in the Colab runtime with `COLAB_BRIDGE_URL`,
 `COLAB_BRIDGE_SESSION_ID`, and `COLAB_BRIDGE_RUNNER_TOKEN` set. It also sets
@@ -460,6 +466,7 @@ Useful options:
 ```bash
 npm run bootstrap:colab -- --dry-run
 npm run bootstrap:colab -- --colab-session <colab-session-name> --gpu T4
+npm run bootstrap:colab -- --colab-session <colab-session-name> --gpu none
 npm run bootstrap:colab -- --project-root /content/project --runner-path python/colab_runner.py
 npm run bootstrap:colab -- --bridge-config ./config.local.json
 ```
@@ -564,12 +571,13 @@ npx wrangler secret put ADMIN_SECRET
 
 ## Maintainer Validation
 
-Smoke a fresh local clone/copy without deploying live infrastructure:
+After committing the release candidate, smoke a fresh local clone without
+deploying live infrastructure:
 
 ```bash
 tmp=$(mktemp -d)
-rsync -a --exclude .git --exclude node_modules --exclude dist --exclude '.env*' ./ "$tmp/repo/"
-(cd "$tmp/repo" && npm install && npm test && npm run package:plugin && npm pack --dry-run)
+git clone . "$tmp/repo"
+(cd "$tmp/repo" && npm install && npm test && npm run package:plugin && npm run check:package)
 ```
 
 Before tagging a release, clone from the public GitHub URL and run the full live
@@ -593,8 +601,14 @@ the smoke test to verify remote shell execution too.
 - Public docs contain no personal paths, account IDs, session IDs, Worker
   subdomains, or real tokens.
 - `LICENSE`, `SECURITY.md`, `.env.example`, and `config.example.json` are present.
-- `npm pack --dry-run` contains no caches, bytecode, local paths, or generated
-  artifacts other than the packaged plugin build output.
+- `npm run check:package` confirms that the npm package contains no caches,
+  bytecode, local config, logs, or generated artifacts other than the packaged
+  plugin build output.
+- The npm package name is claimed and published only from an intentional release
+  process.
+- GitHub private vulnerability reporting is enabled before public release tags.
+- `CHANGELOG.md` and release notes describe user-visible changes and upgrade
+  notes.
 - Release tags are created only after the fresh clone setup test passes.
 
 ## Current Implementation Notes

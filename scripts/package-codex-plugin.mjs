@@ -95,5 +95,15 @@ async function writePluginWranglerConfig() {
 function shouldPackagePath(sourcePath) {
   const normalized = relative(repoRoot, sourcePath).split(sep).join("/");
   const parts = normalized.split("/");
-  return !parts.includes("__pycache__") && !normalized.endsWith(".pyc") && !normalized.endsWith(".pyo");
+  const name = parts.at(-1);
+  return (
+    !parts.includes("__pycache__") &&
+    !parts.includes("node_modules") &&
+    !parts.includes(".cache") &&
+    !parts.includes(".pytest_cache") &&
+    name !== ".DS_Store" &&
+    !normalized.endsWith(".pyc") &&
+    !normalized.endsWith(".pyo") &&
+    !normalized.endsWith(".log")
+  );
 }
